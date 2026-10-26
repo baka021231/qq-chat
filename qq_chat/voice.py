@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import wave
+from .speech_normalize import normalize_for_speech
 
 MAX_AUDIO_BYTES = 8 * 1024 * 1024
 
@@ -21,8 +22,8 @@ def speech_text(text):
     text = re.sub(r'\[([^\]]+)\]\(https?://[^\s)]+\)', r'\1，链接见文字消息', text)
     text = re.sub(r'https?://[^\s<>]+', '链接见文字消息', text)
     text = re.sub(r'(?m)^\s*(?:#{1,6}\s+|[-*+]\s+)', '', text)
-    text = text.replace('`', '').replace('**', '').replace('~', '。')
-    return re.sub(r'\s+', ' ', text).strip()
+    text = text.replace('`', '').replace('**', '')
+    return normalize_for_speech(text)
 
 
 def speech_chunks(text, limit=140):
