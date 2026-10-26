@@ -159,5 +159,29 @@
       "fragment_interval": 0.35,
       "fade_ms": 15
     }
+  },
+  {
+    "raw_text": "同桌，你好~我是爱弥斯。今天完成了3项测试……准备好了吗？Ow< 😊",
+    "spoken_text": "同桌，你好！我是爱弥斯。今天完成了三项测试，准备好了吗？",
+    "seed": 42,
+    "cold_total_seconds": 15.18211681300454,
+    "backend_metrics": {
+      "provider": "cuda",
+      "fallback_reason": null,
+      "load_seconds": 11.941025820000505,
+      "synthesis_seconds": 2.354365957995469,
+      "text_split_method": "cut3",
+      "fragment_interval": 0.35,
+      "fade_ms": 15,
+      "reference_text_override": true
+    },
+    "duration_seconds": 5.31,
+    "sha256": "d518f528560c5e06a9d81e8cfeca389d41274fa83ca873a9437e3ac18bb30b34",
+    "file": "step3-reference.wav",
+    "kind": "synthesized_audio",
+    "sample_rate": 32000,
+    "channels": 1,
+    "sample_width_bytes": 2,
+    "reference_text": "同桌，你好！我是拉贝尔学部的爱弥斯，和你一样。"
   }
 ]

@@ -13,11 +13,12 @@
 | `step4-segments.wav` | 加入 cut3、0.35 秒静音、15 毫秒淡入淡出 |
 | `step5-cleaning.wav` | 再加入波浪号、颜文字、emoji、省略号及数字清洗 |
 | `after.wav` | 最终独立运行的生成样本，参考文案仍未修改 |
+| `step3-reference.wav` | 主人随后确认参考音频后，只修改参考文案“~”为“！”的追加生成样本；同原文、种子 42，其余条件延续 after |
 | `cpu-fallback.wav` | 禁用 GPU 后实际自动回退 CPU 的生成样本 |
 | `after-concurrent-check.wav` | 与其他性能校验并行运行时的附加样本，不用于最终耗时对比 |
 | `reference-original.wav` | 模型包自带的原始参考音频，48 kHz；不是本项目合成的结果 |
 | `reference-qq.wav` | 同一参考音频重采样到 32 kHz，供通过 QQ 试听；不是本项目合成的结果 |
 
-参考音频来自社区模型包 `Mark42IRP/Aemeath_onnx_GSV_model`，包内标注源文件为 `zh_vo_MAIN_YHX_2_7.wav`。保留它用于与生成结果对比，不应把参考原音误认为模型生成质量。参考音频的人工文案及背景音核对尚未完成。
+参考音频来自社区模型包 `Mark42IRP/Aemeath_onnx_GSV_model`，包内标注源文件为 `zh_vo_MAIN_YHX_2_7.wav`。保留它用于与生成结果对比，不应把参考原音误认为模型生成质量。主人随后明确确认参考音频并要求修改文本；修正后的文案单独保存在 `reference-confirmed.txt`，没有修改原录音或覆盖旧样本。此确认来自主人，助手没有自行试听。
 
 `before.wav` 冷启动总耗时 11.364 秒；`after.wav` 冷启动总耗时 14.008 秒，其中纯合成约 2.558 秒。加载缓存和硬件不同，单次计时不能证明普遍加速。没有完成本地播放与 QQ 播放的人工听感对比。
