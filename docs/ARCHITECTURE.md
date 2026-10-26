@@ -109,6 +109,8 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔随机 2～3 �
 
 ## 常见改动
 
+主人常用工具的简短注册说明位于 `prompts.OWNER_TOOLS`，仅在 `authorized=True` 时加入指令。`tools/qq_admin.py` 调用 `qq_chat/admin.py`，将白名单增删查封装为固定操作；与黑名单写入共用 `.group-blacklist.lock`，重新读取并仅更新目标字段，600 权限临时文件原子替换。输出仅包含白名单结果与是否需重启，不提供任意配置读写或返回凭据。该方案复用主人会话的命令工具与现有权限约束，尚未接入 MCP；访客不能因知道命令路径获得工具权限。
+
 模型管理由 `Bridge.model_command()` 执行，worker 先检查主人权限，处理函数再次检查。命令验证目录后保存选择；`thread_for()` 在创建/恢复时传入选择，`run_turn()` 还会在每次 `turn/start` 明确传入所选模型及推理强度，避免已加载线程忽略恢复覆盖。`_thread_models` 仅缓存接口返回值，未设置偏好时用于状态显示；已设置时显示下一轮使用的型号，不把尚未生成的选择冒充为已完成的切换。空线程可能尚无 rollout，遇到该特定错误时重建映射，历史表不清空。
 
 - **加一个命令**：在 `worker()` 的 if/elif 中加一个分支。默认只有主人可用；如果要对所有人开放，把命令加进开头的白名单元组 `('/ping', '/help')`。同时在 `/help` 文字和 `docs/FEATURES.md` 的命令表里补上，并在 `tests/test_command_auth.py` 加测试。
