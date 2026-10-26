@@ -21,7 +21,7 @@ NapCat ──WebSocket──▶ Bridge.session()  事件分发、过滤、去重
                                ├ 进度 → relay_progress() ─┐
                                └ 回复 → relay_answer()  ──┤（BubbleStream 切分）
                                                           ▼
-NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔 1.5 秒，每条 1600 字
+NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔随机 2～3 秒，每条 1600 字
 ```
 
 ## 模块

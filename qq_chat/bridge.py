@@ -4,6 +4,7 @@ import contextlib
 from dataclasses import dataclass
 import json
 import logging
+import random
 from pathlib import Path
 import sqlite3
 import time
@@ -199,7 +200,7 @@ class Bridge:
             future = asyncio.get_running_loop().create_future()
             self.pending[echo] = future
             try:
-                delay = 1.5 - (time.monotonic() - self.last_send)
+                delay = random.uniform(2.0, 3.0) - (time.monotonic() - self.last_send)
                 if delay > 0:
                     await asyncio.sleep(delay)
                 self.last_send = time.monotonic()
