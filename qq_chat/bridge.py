@@ -299,13 +299,52 @@ class Bridge:
                     await self.app.call('thread/unsubscribe', {'threadId': row[0]})
             else:
                 self.__dict__.setdefault('_thread_models', {})[row[0]] = result.get('model')
+                self.__dict__.setdefault('_thread_efforts', {})[row[0]] = result.get('reasoningEffort')
                 return row[0]
         result = await self.app.call("thread/start", {**options, "ephemeral": False})
         thread = result["thread"]["id"]
         self.db.execute("INSERT INTO threads VALUES (?, ?) ON CONFLICT(conversation) DO UPDATE SET thread_id=excluded.thread_id", (conversation, thread))
         self.db.commit()
         self.__dict__.setdefault('_thread_models', {})[thread] = result.get('model')
+        self.__dict__.setdefault('_thread_efforts', {})[thread] = result.get('reasoningEffort')
         return thread
+
+    async def effort_command(self, source, text):
+        if not owner_request(source, self.cfg['owner_qq']):
+            await self.send(source, '推理强度管理仅限主号使用。')
+            return
+        parts = text.split()
+        if len(parts) not in (1, 2) or parts[0] != '/effort':
+            await self.send(source, '用法：/effort 查看当前设置与可选档位；/effort 档位 切换；/effort default 恢复模型默认强度。')
+            return
+        conversation = self.conversation(source)
+        selection = self.db.execute('SELECT model, effort FROM conversation_models WHERE conversation=?', (conversation,)).fetchone()
+        if selection:
+            name, current = selection
+        else:
+            thread = await self.thread_for(source, True)
+            name, current = self._thread_models.get(thread), self._thread_efforts.get(thread)
+        models = await available_models(self.app)
+        info = models.get(name, {})
+        levels = [item['reasoningEffort'] for item in info.get('supportedReasoningEfforts', [])
+                  if isinstance(item, dict) and isinstance(item.get('reasoningEffort'), str)]
+        if len(parts) == 1:
+            await self.send(source, '当前会话模型：' + (name or '未知') + '；effort：' + (current or '接口未返回，暂无法确认')
+                            + '。可选档位：' + ('、'.join(levels) or '接口未提供') + '。')
+            return
+        target = info.get('defaultReasoningEffort') if parts[1] == 'default' else parts[1]
+        if not name or target not in levels:
+            await self.send(source, '该模型不支持这个强度，或接口未提供可校验的档位。请用 /effort 查看；原设置未改变。')
+            return
+        try:
+            self.db.execute('INSERT INTO conversation_models VALUES (?, ?, ?) '
+                            'ON CONFLICT(conversation) DO UPDATE SET model=excluded.model, effort=excluded.effort',
+                            (conversation, name, target))
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        await self.send(source, '当前会话 effort 已设为 ' + target + '，下一条消息生效，模型和聊天上下文保留。')
 
     async def model_command(self, source, text):
         # Defense in depth: never query the catalog or change a thread for a guest.
@@ -450,12 +489,15 @@ class Bridge:
                         and not owner_request(source, self.cfg['owner_qq'])):
                     await self.send(source, '这类管理命令仅限主号使用；你可以继续聊天，或使用 /ping、/help。')
                     continue
-                if text.split(maxsplit=1)[:1] in (['/model'], ['/models']):
+                if text.split(maxsplit=1)[:1] in (['/model'], ['/models'], ['/effort']):
                     try:
-                        await self.model_command(source, text)
+                        if text.split()[0] == '/effort':
+                            await self.effort_command(source, text)
+                        else:
+                            await self.model_command(source, text)
                     except (RuntimeError, OSError, ValueError, sqlite3.Error, asyncio.TimeoutError):
                         logging.warning('Model management failed')
-                        await self.send(source, '模型操作未完成，请稍后重试；用 /model 可重新检查当前状态。')
+                        await self.send(source, '模型操作未完成，请稍后重试；用 /model 或 /effort 可重新检查当前状态。')
                     continue
                 if incoming.attachments:
                     try:
@@ -499,7 +541,7 @@ class Bridge:
                         continue
                     await self.send(source, '已加入群聊用户黑名单。' if parts[0] == '/block' else '已解除群聊用户拉黑。')
                 elif text == "/help":
-                    await self.send(source, "Aemeath：主号在私聊或群聊可请求Linux操作，其他人仅文字聊天；Windows文件只读。群聊需@机器人并附文字或图片，或喊Aemeath、爱弥斯、ams、小爱（英文不分大小写）。图片识别仅主号可用，每条最多5张、每张20 MiB，支持PNG、JPEG、WebP、GIF。文件附件仅主号私聊接收。/ping、/help 所有人可用；/new 创建新会话、/session 查看会话ID、/models 查看可选模型、/model 查看当前模型、/model 模型名 切换、/model default 恢复默认、/blacklist 查看群聊用户黑名单、/block QQ号 拉黑、/unblock QQ号 解除拉黑仅限主号。黑名单用户的群消息静默忽略。")
+                    await self.send(source, "Aemeath：主号在私聊或群聊可请求Linux操作，其他人仅文字聊天；Windows文件只读。群聊需@机器人并附文字或图片，或喊Aemeath、爱弥斯、ams、小爱（英文不分大小写）。图片识别仅主号可用，每条最多5张、每张20 MiB，支持PNG、JPEG、WebP、GIF。文件附件仅主号私聊接收。/ping、/help 所有人可用；/new 创建新会话、/session 查看会话ID、/models 查看可选模型、/model 查看当前模型、/model 模型名 切换、/model default 恢复默认、/effort 查看强度、/effort 档位 切换强度、/effort default 恢复模型默认强度、/blacklist 查看群聊用户黑名单、/block QQ号 拉黑、/unblock QQ号 解除拉黑仅限主号。黑名单用户的群消息静默忽略。")
                 elif len(text) > 6000:
                     await self.send(source, "这条消息较长，请拆成每条不超过6000字。")
                 else:

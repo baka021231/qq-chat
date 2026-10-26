@@ -21,8 +21,8 @@ class FakeApp:
     async def call(self, method, params):
         self.calls.append((method, params))
         if method == 'model/list':
-            return {'data': [{'model': 'model-a', 'defaultReasoningEffort': 'medium'},
-                             {'model': 'model-b', 'defaultReasoningEffort': 'low'}], 'nextCursor': None}
+            return {'data': [{'model': 'model-a', 'defaultReasoningEffort': 'medium', 'supportedReasoningEfforts': [{'reasoningEffort': x} for x in ('low', 'medium', 'high')]},
+                             {'model': 'model-b', 'defaultReasoningEffort': 'low', 'supportedReasoningEfforts': [{'reasoningEffort': x} for x in ('low', 'high')]}], 'nextCursor': None}
         if method == 'thread/unsubscribe':
             return {}
         if params.get('model') == self.reject and self.reject:
@@ -166,11 +166,63 @@ class ModelCommandsTests(unittest.IsolatedAsyncioTestCase):
         await self.bridge.run_turn(Source('private', 789, 789), 'other', 'hello', False, ())
         self.assertNotIn('model', captured[-1])
 
+    async def test_effort_switch_validation_default_and_persistence(self):
+        await self.dispatch('/model model-b')
+        await self.dispatch('/effort high')
+        self.assertEqual(self.selection(), ('model-b', 'high'))
+        await self.dispatch('/effort')
+        self.assertIn('high', self.sent[-1])
+        await self.dispatch('/effort medium')
+        self.assertEqual(self.selection(), ('model-b', 'high'))
+        await self.dispatch('/effort high extra')
+        self.assertIn('用法', self.sent[-1])
+        await self.dispatch('/new')
+        restarted = Bridge(dict(self.cfg))
+        try:
+            self.assertEqual(restarted.db.execute('SELECT model, effort FROM conversation_models').fetchone(), ('model-b', 'high'))
+        finally:
+            restarted.db.close()
+        captured = []
+        async def turn(thread, text, **options):
+            captured.append(options)
+            return 'OK'
+        self.app.turn = turn
+        await self.bridge.run_turn(self.owner, 'thread', 'hello', False, ())
+        self.assertEqual(captured[-1]['effort'], 'high')
+        self.assertEqual(captured[-1]['model'], 'model-b')
+        await self.dispatch('/effort default')
+        self.assertEqual(self.selection(), ('model-b', 'low'))
+        await self.dispatch('/effort high')
+        await self.dispatch('/model model-a')
+        self.assertEqual(self.selection(), ('model-a', 'medium'))
+
+    async def test_effort_without_selection_and_failure(self):
+        await self.dispatch('/effort')
+        self.assertIsNone(self.selection())
+        await self.dispatch('/effort high')
+        self.assertEqual(self.selection(), ('model-a', 'high'))
+        call = self.app.call
+        async def failed_catalog(method, params):
+            if method == 'model/list':
+                raise RuntimeError('Unavailable')
+            return await call(method, params)
+        self.app.call = failed_catalog
+        await self.dispatch('/effort low')
+        self.assertIn('未完成', self.sent[-1])
+        self.assertEqual(self.selection(), ('model-a', 'high'))
+        self.app.call = call
+        group = Source('group', 999, 123)
+        await self.dispatch('/effort low', group)
+        self.assertEqual(self.selection(), ('model-a', 'high'))
+        self.assertEqual(self.bridge.db.execute('SELECT effort FROM conversation_models WHERE conversation=?', (self.bridge.conversation(group),)).fetchone(), ('low',))
+
     async def test_guests_cannot_query_models_or_change_preferences(self):
         for guest in (Source('group', 999, 789, '心糖'), Source('private', 789, 789, '心糖')):
-            for command in ('/models', '/model', '/model model-b'):
+            for command in ('/models', '/model', '/model model-b', '/effort', '/effort high', '/effort default'):
                 await self.dispatch(command, guest)
                 self.assertIn('仅限主号', self.sent[-1])
+            await self.bridge.effort_command(guest, '/effort high')
+            self.assertIn('仅限主号', self.sent[-1])
             await self.bridge.model_command(guest, '/model model-b')
             self.assertIn('仅限主号', self.sent[-1])
         self.assertEqual(self.app.calls, [])
