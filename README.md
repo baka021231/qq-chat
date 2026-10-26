@@ -8,6 +8,7 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 | --- | --- |
 | `qq_bridge.py` | 消息接收、权限、会话与回复调度 |
 | `codex_app.py` | Codex App Server 客户端 |
+| `prompts.py` | 发给模型的提示词（权限指令、历史与群聊上下文、附件和图片说明） |
 | `qq_reply.py` | QQ 回复分段与流式发送 |
 | `qq_files.py`、`qq_images.py` | 文件和图片接收 |
 | `tests/` | 离线回归测试 |
