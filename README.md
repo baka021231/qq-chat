@@ -107,4 +107,4 @@ python3 tools/restart_bridge.py
 
 ## 工作台设定加载
 
-桥接每轮按顺序读取 `workspace/SOUL.md`、`workspace/OWNER.md`，将存在的文件注入 developerInstructions；缺失文件跳过，不回退读取 AGENTS.md，也不自动创建或迁移文件。两个文件目前均对主号和访客会话注入，请勿放入秘密资料。`workspace/AGENTS.md` 仅由 Codex 按工作目录原生加载，桥接不再手动注入。
+桥接每轮按顺序读取 `workspace/SOUL.md`、`workspace/OWNER.md`，将存在的文件注入 developerInstructions；缺失文件跳过，不回退读取 AGENTS.md，也不自动创建或迁移文件。SOUL.md 对所有会话注入；OWNER.md 仅对桥接核验的主号私聊和群内主号会话注入，访客不会读取该文件。`workspace/AGENTS.md` 仅由 Codex 按工作目录原生加载，桥接不再手动注入。

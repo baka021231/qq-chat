@@ -79,7 +79,7 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔随机 2～3 �
 
 发给 Codex 的内容分两部分：
 
-- **developerInstructions**：`prompts.OWNER` / `GUEST` + `SPEAKER_LABELS` + `WORKSPACE_RULES` + `workspace/SOUL.md`、`workspace/OWNER.md` 中存在的文件全文（依次加载）。每次 `thread/start` 或 `thread/resume` 时重新读取并传入，缺失则跳过，下一轮生效。AGENTS.md 不由桥接读取或注入，保留 Codex 按 cwd 原生加载。
+- **developerInstructions**：`prompts.OWNER` / `GUEST` + `SPEAKER_LABELS` + `WORKSPACE_RULES` + `workspace/SOUL.md`、`workspace/OWNER.md` 中存在的文件全文（依次加载，但 OWNER.md 只在 authorized=True 时读取）。每次 `thread/start` 或 `thread/resume` 时重新读取并传入，缺失则跳过，下一轮生效。AGENTS.md 不由桥接读取或注入，保留 Codex 按 cwd 原生加载。
 - **本轮输入**，依次为：
   1. 群聊参考记录（`group_reference`，仅群聊）
   2. 旧历史（`history_import`，仅线程第一次运行，且该会话有旧记录时）

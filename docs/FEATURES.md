@@ -28,7 +28,7 @@
 
 - 每个会话对应一条持久的 Codex 线程：主号私聊一条，每个群一条；主号在群里另有一条单独的操作线程，不与群友的聊天线程混用（`conversation_key`，`test_chat_passes_permissions_and_resumes_separate_threads`）。
 - 桥接重启后会恢复原线程，上下文不丢失。
-- 桥接每轮重新读取 `workspace/SOUL.md` 和 `workspace/OWNER.md`，依次注入，缺失则跳过，修改后下一条消息生效；AGENTS.md 仅由 Codex 原生加载，不再手动注入。
+- 桥接每轮重新读取 `workspace/SOUL.md` 和 `workspace/OWNER.md`，依次注入，OWNER.md 仅限核验主号会话，缺失则跳过，修改后下一条消息生效；AGENTS.md 仅由 Codex 原生加载，不再手动注入。
 - 详细的线程映射和终端接续方法见 `docs/APPSERVER-MIGRATION.md`。
 
 ## 回复
@@ -100,7 +100,7 @@
 
 ## 已知问题
 
-- **群友会话也会注入 SOUL.md 和 OWNER.md**，且共享 cwd 下的 AGENTS.md 仍可由 Codex 原生加载。这些文件不是私人资料隔离边界；不要放入秘密资料。
+- **历史上下文与文件权限**：OWNER.md 不再注入访客会话，AGENTS.md 与 SOUL.md 不应存放主人私人资料。此变更不会清除旧线程已经收到的资料，且不构成操作系统文件访问隔离；访客仍受禁止工具及读取私人资料的规则约束。
 - **触发词按子串匹配**："ams"会匹配 teams、programs 等包含这三个字母的单词，导致误触发。
 - **Windows 盘只读只靠提示词约束**：主号会话以 `danger-full-access` 运行，桥接代码本身不限制写入。
 - **`history` 表持续增长**：每轮都写入，但只在新线程第一次运行时读取（旧桥接的迁移用途），从不清理。

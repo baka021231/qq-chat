@@ -270,7 +270,7 @@ class Bridge:
 
     async def instructions(self, authorized, *, group_moderation=True):
         sections = []
-        for name in ('SOUL.md', 'OWNER.md'):
+        for name in (('SOUL.md', 'OWNER.md') if authorized else ('SOUL.md',)):
             rules_path = BASE / 'workspace' / name
             if rules_path.is_file():
                 content = await asyncio.to_thread(rules_path.read_text, encoding='utf-8')
