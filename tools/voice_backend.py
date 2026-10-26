@@ -9,6 +9,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import math
 from pathlib import Path
 import sys
 import time
@@ -24,6 +25,17 @@ def load_reference_text(path):
     if not text or len(text) > 1000 or '\0' in text:
         raise ValueError('Invalid reference text override')
     return text
+
+
+def sampling_parameters(request):
+    seed = request.get('seed', 42)
+    temperature = request.get('temperature', 1.0)
+    if type(seed) is not int or not 0 <= seed <= 2 ** 32 - 1:
+        raise ValueError('seed must be an unsigned 32-bit integer')
+    if (type(temperature) not in (int, float) or not math.isfinite(temperature)
+            or not .01 <= temperature <= 2.0):
+        raise ValueError('temperature must be between 0.01 and 2.0')
+    return {'seed': seed, 'temperature': float(temperature)}
 
 
 def main():
@@ -60,9 +72,10 @@ def main():
             text = request['text']
             if not isinstance(text, str) or not text.strip() or len(text) > 160:
                 raise ValueError('Expected 1-160 text characters')
+            sampling = sampling_parameters(request)
             with contextlib.redirect_stdout(sys.stderr):
                 started = time.perf_counter()
-                audio = engine.synthesize(text, language='auto', seed=42,
+                audio = engine.synthesize(text, language='auto', **sampling,
                                           text_split_method=args.text_split_method,
                                           fragment_interval=args.fragment_interval,
                                           prompt_text=reference_text, prompt_lang='zh')
@@ -74,7 +87,7 @@ def main():
                 'load_seconds': load_seconds, 'synthesis_seconds': synthesis_seconds,
                 'text_split_method': args.text_split_method,
                 'fragment_interval': args.fragment_interval, 'fade_ms': args.fade_ms,
-                'reference_text_override': reference_text is not None}}
+                'reference_text_override': reference_text is not None, **sampling}}
         except Exception as error:
             print('Speech synthesis failed: ' + type(error).__name__, file=sys.stderr, flush=True)
             response = {'error': 'synthesis_failed'}

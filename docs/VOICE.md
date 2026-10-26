@@ -26,6 +26,12 @@ python3 tools/benchmark_voice.py --output-dir workspace/voice-tests/20261027-opt
 
 `cpu-fallback.wav` 在 `CUDA_VISIBLE_DEVICES=-1` 下真实生成，报告 provider=cpu，回退原因 RuntimeError；冷启动 20.620 秒（该次与 GPU 校验并行，不能用于性能优劣结论）。CPU 完整包的条件测试仅在 GPU 无法使用时才必要；本机 CUDA 完整包已跑通，因此未额外跑 CPU 完整包计时。
 
+批量扫描默认用同一句测试原文、种子 0–9、temperature 0.7/1.0/1.3，共 30 条。后端协议接受 `seed` 和 `temperature`，缺省仍为 42 和 1.0；后端回传实际值，批量工具会逐条核对，避免实际忽略参数却声称完成扫描。使用单个常驻进程，首条 roundtrip 包含冷启动，其余不含；清单另有每条纯合成时间。清单包含有效输入与公开模型信息，不包含本机凭据或完整命令。工具不发送 QQ 消息且拒绝覆盖现有输出目录。
+
+```sh
+python3 tools/batch_voice.py --output-dir samples/voice/2026-10-27-grid
+```
+
 参考音频 `reference-original.wav`、原文及状态单独保存。主人随后明确确认参考音频并要求修改文本，因此新增 `samples/voice/2026-10-27/reference-confirmed.txt`，只将参考文案中的波浪号替换成感叹号。使用后端参数 `--reference-text-file` 指定该文件，作为 `prompt_text` 同时用于 GPU 与 CPU 回退。原模型包未改写，历史 `after.wav` 仍代表修改参考文案之前的结果；新增 `step3-reference.wav` 表示确认后最后补上的步骤。移除该参数即可回退原模型包文案，不影响其他优化。
 
 当前执行环境没有本地播放器或 PulseAudio/PortAudio 客户端库，助手也没有音频试听工具。可以发送 A/B 语音并核对 QQ 接口确认，但不能据此声称已完成本地与 QQ 的听感对比，需人工试听。
