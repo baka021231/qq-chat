@@ -1,5 +1,6 @@
 """Text QQ chat bridge: NapCat OneBot 11 -> existing Linux Codex login."""
 import asyncio
+import base64
 import contextlib
 from dataclasses import dataclass
 import json
@@ -17,6 +18,7 @@ from .images import MAX_IMAGE_BYTES, save_image
 from .reply import stream_bubbles
 from .moderation import BLOCK_SENDER, blocked_group_sender, bounded_guest_reply, obvious_abuse, update_blacklist
 from .models import available_models, configured_default
+from .voice import ProcessSynthesizer, VoiceReplies, validate_wav
 
 from websockets.asyncio.client import connect
 
@@ -141,6 +143,12 @@ class Bridge:
         self.send_lock = asyncio.Lock()
         self.last_send = 0.0
         self.queue = asyncio.Queue(maxsize=8)
+        voice = cfg.get('voice') or {}
+        self.voice = None
+        if voice.get('enabled', False):
+            self.voice = VoiceReplies(
+                ProcessSynthesizer(voice['command'], timeout=float(voice.get('timeout_seconds', 120))),
+                self.send_audio, self.send, self.blocked)
         self.db = sqlite3.connect(BASE / "chat.sqlite3")
         self.db.execute("CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, time REAL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS history (role TEXT, content TEXT)")
@@ -196,23 +204,43 @@ class Bridge:
             if start == 0 and mention:
                 message.append({"type": "at", "data": {"qq": str(source.sender_id)}})
             message.append({"type": "text", "data": {"text": text[start:start + 1600]}})
-            echo = uuid.uuid4().hex
-            future = asyncio.get_running_loop().create_future()
-            self.pending[echo] = future
-            try:
-                delay = random.uniform(2.0, 3.0) - (time.monotonic() - self.last_send)
-                if delay > 0:
-                    await asyncio.sleep(delay)
-                self.last_send = time.monotonic()
-                await self.ws.send(json.dumps({"action": f"send_{source.kind}_msg", "params": {
-                    "group_id" if source.kind == "group" else "user_id": source.target,
-                    "message": message,
-                }, "echo": echo}))
-                response = await asyncio.wait_for(future, timeout=20)
-                if response.get("status") != "ok" or response.get("retcode") != 0:
-                    raise RuntimeError("QQ rejected outgoing message")
-            finally:
-                self.pending.pop(echo, None)
+            await self._send_message(source, message)
+
+    async def _send_message(self, source, message, timeout=20):
+        """Caller holds send_lock; all message types share the same limiter."""
+        delay = random.uniform(2.0, 3.0) - (time.monotonic() - self.last_send)
+        if delay > 0:
+            await asyncio.sleep(delay)
+        if self.blocked(source):
+            return
+        echo = uuid.uuid4().hex
+        future = asyncio.get_running_loop().create_future()
+        self.pending[echo] = future
+        try:
+            self.last_send = time.monotonic()
+            await self.ws.send(json.dumps({"action": f"send_{source.kind}_msg", "params": {
+                "group_id" if source.kind == "group" else "user_id": source.target,
+                "message": message,
+            }, "echo": echo}))
+            response = await asyncio.wait_for(future, timeout=timeout)
+            if response.get("status") != "ok" or response.get("retcode") != 0:
+                raise RuntimeError("QQ rejected outgoing message")
+        finally:
+            self.pending.pop(echo, None)
+
+    async def send_audio(self, source, audio):
+        validate_wav(audio)
+        # Base64 avoids dependencies on a shared filesystem with NapCat.
+        message = [{'type': 'record', 'data': {
+            'file': 'base64://' + base64.b64encode(audio).decode('ascii')}}]
+        async with self.send_lock:
+            if not self.blocked(source):
+                await self._send_message(source, message, timeout=90)
+
+    async def enqueue_voice(self, source, reply):
+        voice = getattr(self, 'voice', None)
+        if voice is not None and not voice.submit(source, reply):
+            await self.send(source, '语音队列已满，本次仅发送文字。')
 
     async def onebot_call(self, action, params):
         echo = uuid.uuid4().hex
@@ -558,6 +586,9 @@ class Bridge:
                         reply = bounded_guest_reply(reply)
                     if not streamed:
                         await self.send(source, reply)
+                    # Enqueue only completed replies, after guest moderation and text delivery.
+                    # Progress, commands and error notices remain text-only.
+                    await self.enqueue_voice(source, reply)
                     self.db.executemany(
                         "INSERT INTO history (role, content, conversation) VALUES (?, ?, ?)",
                         [("user", text, self.conversation(source)), ("assistant", reply, self.conversation(source))])
@@ -617,6 +648,8 @@ class Bridge:
             worker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await worker
+            if self.voice is not None:
+                await self.voice.close()
             for future in self.pending.values():
                 if not future.done():
                     future.cancel()

@@ -8,5 +8,16 @@
   "allowed_groups": [],
   "group_user_blacklist": [],
   "mention_qq": [],
-  "show_tool_progress": false
+  "show_tool_progress": false,
+  "voice": {
+    "enabled": false,
+    "timeout_seconds": 120,
+    "command": [
+      "/home/<user>/.local/share/aemeath-voice/venv/bin/python",
+      "-u",
+      "/path/to/qq-chat/tools/voice_backend.py",
+      "--model-dir",
+      "/home/<user>/.local/share/aemeath-voice/model/ONNX_aimisiV2"
+    ]
+  }
 }

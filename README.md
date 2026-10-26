@@ -11,10 +11,13 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 | `qq_chat/codex_app.py` | Codex App Server 客户端 |
 | `qq_chat/prompts.py` | 发给模型的提示词（权限指令、历史与群聊上下文、附件和图片说明） |
 | `qq_chat/reply.py` | QQ 回复分段与流式发送 |
+| `qq_chat/voice.py` | 独立语音队列、合成进程协议和音频校验 |
+| `tools/voice_backend.py` | 隔离 Python 环境中的常驻 ONNX 合成适配器 |
 | `qq_chat/files.py`、`qq_chat/images.py` | 文件和图片接收 |
 | `tests/` | 离线回归测试 |
 | `tools/` | 当前可用的连接检查、重启工具 |
 | `docs/FEATURES.md` | 功能说明：能做什么、限制、不支持的功能、已知问题 |
+| `docs/VOICE.md` | 本地角色语音安装、解耦接口、实测与启用方法 |
 | `docs/BACKLOG.md` | 需求待办：目标、验收标准和待定事项 |
 | `docs/ROADMAP.md` | 远景小地图：语音、前后台协作与希望实现的体验 |
 | `docs/ARCHITECTURE.md` | 架构与开发说明：模块、权限模型、数据库、常见改动、测试写法 |
@@ -48,6 +51,7 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 | `mention_qq` | 群聊回复这些 QQ 号的消息时自动 @ 对方 |
 | `group_user_blacklist` | 群聊用户 QQ 号列表，默认空；跨群静默忽略，动态拉黑会保存，主人豁免。主人用 `/blacklist` 查看、`/block QQ号` 添加、`/unblock QQ号` 解除 |
 | `show_tool_progress` | 进度中是否推送工具调用摘要，默认 `false` |
+| `voice` | 可选本地语音回复，默认关闭；启用后正常回复先发文字，再补对应语音。配置见 `docs/VOICE.md` |
 
 不论哪种群设置，群聊都需要 @ 机器人或喊触发词才会回复。
 
