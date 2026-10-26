@@ -5,6 +5,7 @@ The engine is loaded once. Diagnostics use stderr, never the protocol stream.
 """
 import argparse
 import base64
+import hashlib
 import contextlib
 import importlib.util
 import io
@@ -18,13 +19,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from qq_chat.speech_runtime import RecoveringEngine, segment_fades
 
 
-def load_reference_text(path):
-    if path is None:
-        return None
-    text = path.read_text(encoding='utf-8').strip()
-    if not text or len(text) > 1000 or '\0' in text:
+def validate_reference_text(text):
+    if not isinstance(text, str) or not text.strip() or len(text) > 1000 or '\0' in text:
         raise ValueError('Invalid reference text override')
-    return text
+    return text.strip()
+
+
+def load_reference_text(path):
+    return None if path is None else validate_reference_text(path.read_text(encoding='utf-8'))
 
 
 def sampling_parameters(request):
@@ -73,12 +75,13 @@ def main():
             if not isinstance(text, str) or not text.strip() or len(text) > 160:
                 raise ValueError('Expected 1-160 text characters')
             sampling = sampling_parameters(request)
+            prompt = validate_reference_text(request['prompt_text']) if 'prompt_text' in request else reference_text
             with contextlib.redirect_stdout(sys.stderr):
                 started = time.perf_counter()
                 audio = engine.synthesize(text, language='auto', **sampling,
                                           text_split_method=args.text_split_method,
                                           fragment_interval=args.fragment_interval,
-                                          prompt_text=reference_text, prompt_lang='zh')
+                                          prompt_text=prompt, prompt_lang='zh')
                 synthesis_seconds = time.perf_counter() - started
                 output = io.BytesIO()
                 soundfile.write(output, audio, 32000, format='WAV', subtype='PCM_16')
@@ -87,7 +90,9 @@ def main():
                 'load_seconds': load_seconds, 'synthesis_seconds': synthesis_seconds,
                 'text_split_method': args.text_split_method,
                 'fragment_interval': args.fragment_interval, 'fade_ms': args.fade_ms,
-                'reference_text_override': reference_text is not None, **sampling}}
+                'reference_text_override': prompt is not None,
+                'reference_text_sha256': hashlib.sha256(prompt.encode()).hexdigest() if prompt else None,
+                **sampling}}
         except Exception as error:
             print('Speech synthesis failed: ' + type(error).__name__, file=sys.stderr, flush=True)
             response = {'error': 'synthesis_failed'}

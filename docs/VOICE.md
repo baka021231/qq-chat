@@ -32,6 +32,14 @@ python3 tools/benchmark_voice.py --output-dir workspace/voice-tests/20261027-opt
 python3 tools/batch_voice.py --output-dir samples/voice/2026-10-27-grid
 ```
 
+主人试听上一批后认为 temperature 影响较小，种子 7 最接近原声，其次为 9 和 1。这是主人的试听反馈，不是程序计算出的评分。下一轮固定 temperature=1.0，只测试这三个种子与两版参考文案。`tools/reference_voice_grid.py` 生成 5 句不同内容语气（开心、平淡、问句、安慰、认真），每句话在两版中完全相同；参考音频与模型不变，参考文案仅将“~”替换成“！”。后端对每个请求单独使用 `prompt_text`，回传 SHA256 供批量工具核对，不修改已确认的日常参考配置。
+
+```sh
+python3 tools/reference_voice_grid.py --output-dir samples/voice/2026-10-27-reference-grid
+```
+
+输出如 `07-tilde-01.wav`、`07-exclamation-01.wav`，依次表示种子、参考文案版本、句子编号。tilde 为“~”，exclamation 为“！”。tone 字段只标明测试句的内容语气，不代表额外情感控制。工具要求日常语音处于关闭状态，只生成本地 WAV，不发 QQ 消息。
+
 参考音频 `reference-original.wav`、原文及状态单独保存。主人随后明确确认参考音频并要求修改文本，因此新增 `samples/voice/2026-10-27/reference-confirmed.txt`，只将参考文案中的波浪号替换成感叹号。使用后端参数 `--reference-text-file` 指定该文件，作为 `prompt_text` 同时用于 GPU 与 CPU 回退。原模型包未改写，历史 `after.wav` 仍代表修改参考文案之前的结果；新增 `step3-reference.wav` 表示确认后最后补上的步骤。移除该参数即可回退原模型包文案，不影响其他优化。
 
 当前执行环境没有本地播放器或 PulseAudio/PortAudio 客户端库，助手也没有音频试听工具。可以发送 A/B 语音并核对 QQ 接口确认，但不能据此声称已完成本地与 QQ 的听感对比，需人工试听。

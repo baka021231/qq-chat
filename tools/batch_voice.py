@@ -27,13 +27,24 @@ async def run_grid(command, output_dir, raw_text, seeds, temperatures, context=N
         for temperature in temperatures:
             params = sampling_parameters({'seed': seed, 'temperature': temperature})
             name = f'seed-{seed:02d}_temp-{temperature:g}'.replace('.', 'p') + '.wav'
-            jobs.append((name, params))
-    if not jobs or len({name for name, _ in jobs}) != len(jobs):
-        raise ValueError('Grid must contain unique seed/temperature combinations')
+            jobs.append({'file': name, 'text': text, **params})
+    metadata = {'raw_text': raw_text, 'spoken_text': text,
+                'seeds': seeds, 'temperatures': temperatures, 'context': context or {}}
+    return await run_jobs(command, output_dir, jobs, metadata)
+
+
+async def run_jobs(command, output_dir, jobs, metadata):
+    if not jobs or len({job['file'] for job in jobs}) != len(jobs):
+        raise ValueError('Batch must contain unique output names')
+    for job in jobs:
+        if Path(job['file']).name != job['file'] or not job['file'].endswith('.wav'):
+            raise ValueError('Invalid sample filename')
+        if not isinstance(job['text'], str) or not 0 < len(job['text']) <= 140:
+            raise ValueError('Each text must fit one 140-character chunk')
+        sampling_parameters(job)
     # Never overwrite existing comparisons or silently mix two runs.
     output_dir.mkdir(parents=True, exist_ok=False)
-    report = {'status': 'running', 'raw_text': raw_text, 'spoken_text': text,
-              'seeds': seeds, 'temperatures': temperatures, 'context': context or {}, 'samples': []}
+    report = {**metadata, 'status': 'running', 'samples': []}
     manifest = output_dir / 'manifest.json'
     def save(): manifest.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
     save()
@@ -42,21 +53,29 @@ async def run_grid(command, output_dir, raw_text, seeds, temperatures, context=N
         with (output_dir / 'backend.stderr.log').open('wb') as diagnostics:
             process = await asyncio.create_subprocess_exec(*command, stdin=asyncio.subprocess.PIPE,
                         stdout=asyncio.subprocess.PIPE, stderr=diagnostics, limit=MAX_AUDIO_BYTES * 2)
-            for index, (name, params) in enumerate(jobs, 1):
+            for index, job in enumerate(jobs, 1):
+                name, params = job['file'], sampling_parameters(job)
+                request = {'text': job['text'], **params}
+                if 'prompt_text' in job:
+                    request['prompt_text'] = job['prompt_text']
                 started = time.perf_counter()
                 async with asyncio.timeout(180):
-                    process.stdin.write((json.dumps({'text': text, **params}, ensure_ascii=False) + '\n').encode())
+                    process.stdin.write((json.dumps(request, ensure_ascii=False) + '\n').encode())
                     await process.stdin.drain()
                     response = json.loads(await process.stdout.readline())
                 metrics = response.get('metrics', {})
                 if any(metrics.get(key) != value for key, value in params.items()):
                     raise ValueError('Backend did not confirm requested sampling parameters')
+                if 'prompt_text' in request:
+                    expected = hashlib.sha256(request['prompt_text'].encode()).hexdigest()
+                    if metrics.get('reference_text_sha256') != expected:
+                        raise ValueError('Backend did not confirm requested reference text')
                 audio = base64.b64decode(response['wav'], validate=True)
                 validate_wav(audio)
                 with (output_dir / name).open('xb') as target: target.write(audio)
                 with wave.open(io.BytesIO(audio)) as stream:
                     duration = stream.getnframes() / stream.getframerate()
-                report['samples'].append({'file': name, **params, 'duration_seconds': duration,
+                report['samples'].append({**job, **params, 'duration_seconds': duration,
                     'roundtrip_seconds': time.perf_counter() - started,
                     'sha256': hashlib.sha256(audio).hexdigest(), 'metrics': metrics})
                 save()
