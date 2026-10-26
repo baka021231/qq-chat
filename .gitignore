@@ -1,0 +1,21 @@
+# Private runtime data
+config.json
+chat.sqlite3
+*.sqlite3
+*.log
+.bridge-restart.lock
+
+# Local history (backups contain config.json and chat databases)
+archive/
+
+# Bot workspace: personal rules and separately versioned user projects
+workspace/
+
+# Installer output
+setup/install.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
