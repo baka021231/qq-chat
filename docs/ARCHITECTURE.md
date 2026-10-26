@@ -1,6 +1,6 @@
 # 架构与开发说明
 
-本文面向修改桥接代码的人，包括 AI 工具。功能和限制见 `docs/FEATURES.md`，Codex 会话细节见 `docs/APPSERVER-MIGRATION.md`。
+本文面向修改桥接代码的人，包括 AI 工具。功能和限制见 `docs/FEATURES.md`，需求待办与验收标准见 `docs/BACKLOG.md`，Codex 会话细节见 `docs/APPSERVER-MIGRATION.md`。
 
 ## 总览
 
