@@ -12,6 +12,47 @@ from qq_chat.bridge import Bridge, Source, incoming_text, speaker_message, owner
 
 
 class MessagePolicyTests(unittest.TestCase):
+    def test_private_whitelist_is_chat_only_and_does_not_change_owner(self):
+        event = {'post_type': 'message', 'message_type': 'private', 'self_id': 456,
+                 'user_id': 789, 'sender': {'nickname': '心糖'},
+                 'message': [{'type': 'text', 'data': {'text': '你好'}},
+                             {'type': 'image', 'data': {'file': 'picture'}},
+                             {'type': 'file', 'data': {'file_id': 'file'}}]}
+        self.assertIsNone(incoming_text(event, 123))
+        incoming = incoming_text(event, 123, private_whitelist=[789])
+        self.assertEqual(incoming.text, '你好')
+        self.assertEqual(incoming.images, ())
+        self.assertEqual(incoming.attachments, ())
+        self.assertFalse(owner_request(incoming.source, 123))
+        self.assertIn('身份：访客', speaker_message(incoming.source, incoming.text, 123))
+        self.assertEqual(conversation_key(incoming.source, 123), 'private:789')
+        self.assertIsNone(incoming_text(dict(event, user_id=888), 123, private_whitelist=[789]))
+        self.assertIsNotNone(incoming_text(dict(event, user_id=123), 123, private_whitelist=[]))
+        self.assertIsNone(incoming_text(dict(event, message=event['message'][1:]), 123, private_whitelist=[789]))
+
+    def test_private_whitelist_is_used_by_live_event_dispatch(self):
+        async def check():
+            with tempfile.TemporaryDirectory() as directory, patch('qq_chat.bridge.BASE', Path(directory)):
+                bridge = Bridge({'owner_qq': 123, 'codex_path': 'unused', 'private_whitelist': [789]})
+                class Socket:
+                    def __aiter__(self):
+                        async def events():
+                            for user in (789, 888):
+                                yield json.dumps({'post_type': 'message', 'message_type': 'private',
+                                                  'self_id': 456, 'user_id': user, 'message_id': user,
+                                                  'message': [{'type': 'text', 'data': {'text': '你好'}}]})
+                        return events()
+                async def idle_worker():
+                    await asyncio.Future()
+                bridge.worker = idle_worker
+                try:
+                    await bridge.session(Socket())
+                    self.assertEqual(bridge.queue.qsize(), 1)
+                    self.assertEqual(bridge.queue.get_nowait().source.sender_id, 789)
+                finally:
+                    bridge.db.close()
+        asyncio.run(check())
+
     def test_quiet_group_messages_are_reference_without_triggering_reply(self):
         async def check():
             with tempfile.TemporaryDirectory() as directory, patch('qq_chat.bridge.BASE', Path(directory)):
@@ -225,6 +266,14 @@ class MessagePolicyTests(unittest.TestCase):
                         self.assertIn('规则版本二', calls[-1][1]['developerInstructions'])
                         self.assertNotIn('规则版本一', calls[-1][1]['developerInstructions'])
                         self.assertEqual(calls[-1][1]['sandbox'], 'read-only')
+                bridge.cfg['private_whitelist'] = [789]
+                await bridge.chat(Source('private', 789, 789), '你好')
+                self.assertEqual(calls[-1][1]['sandbox'], 'read-only')
+                self.assertIn('不调用工具', calls[-1][1]['developerInstructions'])
+                self.assertNotIn('[[BLOCK_CURRENT_GROUP_SENDER]]', calls[-1][1]['developerInstructions'])
+                threads = dict(bridge.db.execute('SELECT conversation, thread_id FROM threads'))
+                self.assertIn('private:789', threads)
+                self.assertNotEqual(threads['private:789'], threads['group:999'])
             finally:
                 bridge.db.close()
         asyncio.run(check())

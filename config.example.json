@@ -3,6 +3,7 @@
   "onebot_token": "<NapCat OneBot token>",
   "codex_path": "/home/<user>/.local/bin/codex",
   "owner_qq": "<主号 QQ>",
+  "private_whitelist": [],
   "allow_all_groups": true,
   "allowed_groups": [],
   "group_user_blacklist": [],

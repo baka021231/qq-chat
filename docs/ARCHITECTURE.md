@@ -62,6 +62,8 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔 1.5 秒，每�
 
 主号在群里时，会话键加上 `:owner` 后缀，与群友的线程分开，避免群友的历史消息进入有操作权限的线程。
 
+`private_whitelist` 只扩大文字私聊的接收范围；主号判断仍只认 `owner_qq`。白名单访客使用独立的 `private:<QQ>` 会话、非主号指令和只读 sandbox，无工具、媒体及管理权限。群聊拉黑协议仅用于群聊，不注入访客私聊。
+
 修改权限相关代码时，必须同时更新 `tests/test_command_auth.py` 和 `tests/test_message_policy.py` 中的对应测试。
 
 ## 群聊用户动态拉黑

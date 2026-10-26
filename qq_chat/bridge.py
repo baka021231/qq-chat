@@ -60,13 +60,13 @@ def speaker_message(source, text, owner):
     # Names are display data; authority comes only from the numeric sender ID.
     name = ''.join(c if c not in '[]|' and not unicodedata.category(c).startswith('C') else ' '
                    for c in source.sender_name).strip()[:64] or str(source.sender_id)
-    role = '主人' if str(source.sender_id) == str(owner) else '群友'
+    role = '主人' if str(source.sender_id) == str(owner) else ('群友' if source.kind == 'group' else '访客')
     scene = '私聊' if source.kind == 'private' else '群聊'
     return f'[发言人：{name} | QQ：{source.sender_id} | 身份：{role} | 场景：{scene}]\n{text}'
 
 
 def incoming_text(event, owner, allowed_groups=(), allow_all_groups=False, require_trigger=True,
-                  group_user_blacklist=()):
+                  group_user_blacklist=(), private_whitelist=()):
     if event.get("post_type") != "message":
         return None
     user = str(event.get("user_id", ""))
@@ -77,7 +77,7 @@ def incoming_text(event, owner, allowed_groups=(), allow_all_groups=False, requi
     sender = event.get('sender') or {}
     name = str(sender.get('card') or sender.get('nickname') or user)
     if kind == "private":
-        if user != str(owner):
+        if user != str(owner) and user not in {str(qq) for qq in private_whitelist}:
             return None
         source = Source("private", int(user), int(user), name)
     elif kind == "group":
@@ -101,7 +101,7 @@ def incoming_text(event, owner, allowed_groups=(), allow_all_groups=False, requi
     if require_trigger and kind == "group" and not (mentioned or any(alias in text.casefold() for alias in ('aemeath', '爱弥斯', 'ams', '小爱'))):
         return None
     attachments = tuple(part.get('data', {}) for part in message
-                        if part.get('type') == 'file') if kind == 'private' else ()
+                        if part.get('type') == 'file') if kind == 'private' and owner_request(source, owner) else ()
     images = tuple(part.get('data', {}) for part in message
                    if part.get('type') == 'image') if owner_request(source, owner) else ()
     return Incoming(source, text, attachments, images=images) if text or attachments or images else None
@@ -265,19 +265,19 @@ class Bridge:
             paths.append(str(path))
         return paths
 
-    async def instructions(self, authorized):
+    async def instructions(self, authorized, *, group_moderation=True):
         rules = None
         rules_path = BASE / 'workspace' / 'AGENTS.md'
         if rules_path.is_file():
             rules = await asyncio.to_thread(rules_path.read_text, encoding='utf-8')
             logging.info('QQ workspace AGENTS.md loaded for current turn')
-        return prompts.instructions(authorized, rules)
+        return prompts.instructions(authorized, rules, group_moderation=group_moderation)
 
     async def thread_for(self, source, authorized):
         """Resume the conversation's Codex thread, or start one, under this turn's permissions."""
         options = {"cwd": str(BASE / "workspace"), "approvalPolicy": "never",
                    "sandbox": "danger-full-access" if authorized else "read-only",
-                   "developerInstructions": await self.instructions(authorized)}
+                   "developerInstructions": await self.instructions(authorized, group_moderation=source.kind == 'group')}
         await self.app.start()
         conversation = self.conversation(source)
         row = self.db.execute("SELECT thread_id FROM threads WHERE conversation=?", (conversation,)).fetchone()
@@ -470,7 +470,8 @@ class Bridge:
                     continue
                 incoming = incoming_text(event, self.cfg["owner_qq"], self.cfg.get("allowed_groups", []),
                                          allow_all_groups=self.cfg.get('allow_all_groups', True), require_trigger=False,
-                                         group_user_blacklist=self.cfg.get('group_user_blacklist', []))
+                                         group_user_blacklist=self.cfg.get('group_user_blacklist', []),
+                                         private_whitelist=self.cfg.get('private_whitelist', []))
                 if incoming is None:
                     continue
                 message_id = event.get("message_id")

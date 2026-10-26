@@ -67,6 +67,14 @@ class CommandAuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('private:123', threads)
         self.assertEqual(self.bridge.db.execute('SELECT conversation FROM old_threads').fetchall(), [('group:999:owner',)])
 
+    async def test_private_whitelist_guest_has_no_management_permissions(self):
+        self.bridge.cfg['private_whitelist'] = [789]
+        before = self.snapshot()
+        for command in ('/new', '/session', '/block 123', '/unblock 789', '/blacklist'):
+            await self.dispatch(Source('private', 789, 789), command)
+            self.assertIn('仅限主号', self.sent[-1])
+            self.assertEqual(self.snapshot(), before)
+
     async def test_owner_can_read_private_and_group_session(self):
         for source, expected in ((Source('private', 123, 123), 'id-private:123'),
                                  (Source('group', 999, 123), 'id-group:999:owner')):

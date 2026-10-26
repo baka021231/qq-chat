@@ -40,6 +40,7 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 | `ws_url`、`onebot_token` | NapCat OneBot WebSocket 地址和 token |
 | `codex_path` | `codex` 可执行文件路径 |
 | `owner_qq` | 主号 QQ，只有它可以授权操作 |
+| `private_whitelist` | 允许文字私聊的其他 QQ 号，默认空；不授予工具、文件、图片或管理命令权限，主号始终允许 |
 | `allow_all_groups` | `true` 时响应机器人加入的所有群，此时忽略 `allowed_groups`；省略时也按 `true` 处理 |
 | `allowed_groups` | `allow_all_groups` 为 `false` 时才生效的群号白名单 |
 | `mention_qq` | 群聊回复这些 QQ 号的消息时自动 @ 对方 |
