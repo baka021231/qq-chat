@@ -47,6 +47,7 @@ class RecoveringEngine:
                 return
             except Exception as error:
                 self.fallback_reason = type(error).__name__
+                error.__traceback__ = None
                 self.engine = None
                 gc.collect()
         self.engine = loader(cpu_model_dir if provider != 'cpu' else model_dir, 'cpu')
@@ -58,6 +59,7 @@ class RecoveringEngine:
             if self.provider != 'cuda':
                 raise
             self.fallback_reason = type(error).__name__
+            error.__traceback__ = None
             self.engine = None
             gc.collect()
             self.engine = self.loader(self.cpu_model_dir, 'cpu')

@@ -1,4 +1,5 @@
 import unittest
+import weakref
 from qq_chat.speech_runtime import RecoveringEngine, SESSIONS, fade_audio, segment_fades
 
 
@@ -50,6 +51,18 @@ class RecoveryTests(unittest.TestCase):
         engine = RecoveringEngine(load, 'full', 'saver', 'cpu')
         with self.assertRaises(RuntimeError): engine.synthesize('你好')
         self.assertEqual(calls, [('full', 'cpu')])
+
+    def test_failed_gpu_engine_is_released_before_cpu_allocation(self):
+        references = []
+        def load(path, provider):
+            if provider == 'cuda':
+                result = Engine(fail=True)
+                references.append(weakref.ref(result))
+                return result
+            self.assertIsNone(references[0]())
+            return Engine(cuda=False)
+        engine = RecoveringEngine(load, 'full', 'saver')
+        self.assertEqual(engine.synthesize('你好'), '你好')
 
 
 class SegmentTests(unittest.TestCase):
