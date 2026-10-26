@@ -1,0 +1,163 @@
+[
+  {
+    "file": "after-concurrent-check.wav",
+    "sha256": "18d239c09ff0bbc8499df9415463b0a147f81ff7a1074070359559a88e085a4f",
+    "duration_seconds": 6.87,
+    "sample_rate": 32000,
+    "channels": 1,
+    "sample_width_bytes": 2,
+    "kind": "synthesized_audio",
+    "raw_text": "同桌，你好~我是爱弥斯。今天完成了3项测试……准备好了吗？Ow< 😊",
+    "spoken_text": "同桌，你好！我是爱弥斯。今天完成了三项测试，准备好了吗？",
+    "seed": 42,
+    "cold_total_seconds": 17.73319835500297,
+    "backend_metrics": {
+      "provider": "cuda",
+      "fallback_reason": null,
+      "load_seconds": 13.227178833003563,
+      "synthesis_seconds": 3.3319756769997184,
+      "text_split_method": "cut3",
+      "fragment_interval": 0.35,
+      "fade_ms": 15
+    }
+  },
+  {
+    "file": "after.wav",
+    "sha256": "18d239c09ff0bbc8499df9415463b0a147f81ff7a1074070359559a88e085a4f",
+    "duration_seconds": 6.87,
+    "sample_rate": 32000,
+    "channels": 1,
+    "sample_width_bytes": 2,
+    "kind": "synthesized_audio",
+    "raw_text": "同桌，你好~我是爱弥斯。今天完成了3项测试……准备好了吗？Ow< 😊",
+    "spoken_text": "同桌，你好！我是爱弥斯。今天完成了三项测试，准备好了吗？",
+    "seed": 42,
+    "cold_total_seconds": 14.007901983997726,
+    "backend_metrics": {
+      "provider": "cuda",
+      "fallback_reason": null,
+      "load_seconds": 10.850644452999404,
+      "synthesis_seconds": 2.558016373004648,
+      "text_split_method": "cut3",
+      "fragment_interval": 0.35,
+      "fade_ms": 15
+    }
+  },
+  {
+    "file": "before.wav",
+    "sha256": "a6989e1215183bc9a373ea20d76e80a9674a0141d9ddc55c5c7273f1d0627fdf",
+    "duration_seconds": 7.78,
+    "sample_rate": 32000,
+    "channels": 1,
+    "sample_width_bytes": 2,
+    "kind": "synthesized_audio",
+    "raw_text": "同桌，你好~我是爱弥斯。今天完成了3项测试……准备好了吗？Ow< 😊",
+    "spoken_text": "同桌，你好。我是爱弥斯。今天完成了3项测试……准备好了吗？Ow< 😊",
+    "seed": 42,
+    "cold_total_seconds": 11.364246548000665,
+    "backend_metrics": null
+  },
+  {
+    "file": "cpu-fallback.wav",
+    "sha256": "01733e699c861db38083d17a5a54cac1450c09125ee46bf955a3e7b9f070249b",
+    "duration_seconds": 5.59,
+    "sample_rate": 32000,
+    "channels": 1,
+    "sample_width_bytes": 2,
+    "kind": "synthesized_audio",
+    "raw_text": "同桌，你好~我是爱弥斯。今天完成了3项测试……准备好了吗？Ow< 😊",
+    "spoken_text": "同桌，你好！我是爱弥斯。今天完成了三项测试，准备好了吗？",
+    "seed": 42,
+    "cold_total_seconds": 20.619634982998832,
+    "backend_metrics": {
+      "provider": "cpu",
+      "fallback_reason": "RuntimeError",
+      "load_seconds": 18.810102535993792,
+      "synthesis_seconds": 1.3030324549981742,
+      "text_split_method": "cut3",
+      "fragment_interval": 0.35,
+      "fade_ms": 15
+    }
+  },
+  {
+    "file": "reference-original.wav",
+    "sha256": "c6a66db43b9b4686fb9485c90df3108c71835ba8a6e89bf10a5323726e01d490",
+    "duration_seconds": 5.18425,
+    "sample_rate": 48000,
+    "channels": 1,
+    "sample_width_bytes": 2,
+    "kind": "reference_audio"
+  },
+  {
+    "file": "reference-qq.wav",
+    "sha256": "d04f4dc64c0231bd0256a128cc878e633a8f60d939d1cbf403564bc2697790df",
+    "duration_seconds": 5.18425,
+    "sample_rate": 32000,
+    "channels": 1,
+    "sample_width_bytes": 2,
+    "kind": "reference_audio"
+  },
+  {
+    "file": "step2-gpu-full.wav",
+    "sha256": "3cbf776b668f391ed25f4d7199699bc07c79bee760979d8e9814673cc7716e80",
+    "duration_seconds": 6.86,
+    "sample_rate": 32000,
+    "channels": 1,
+    "sample_width_bytes": 2,
+    "kind": "synthesized_audio",
+    "raw_text": "同桌，你好~我是爱弥斯。今天完成了3项测试……准备好了吗？Ow< 😊",
+    "spoken_text": "同桌，你好。我是爱弥斯。今天完成了3项测试……准备好了吗？Ow< 😊",
+    "seed": 42,
+    "cold_total_seconds": 49.345912459997635,
+    "backend_metrics": {
+      "provider": "cuda",
+      "fallback_reason": null,
+      "load_seconds": 38.917950695999025,
+      "synthesis_seconds": 9.474860266993346
+    }
+  },
+  {
+    "file": "step4-segments.wav",
+    "sha256": "3ba5ce97ef2e1f023009de303e4adf9bd236bb0f065d0aa44bbbe9024cdaa971",
+    "duration_seconds": 5.54,
+    "sample_rate": 32000,
+    "channels": 1,
+    "sample_width_bytes": 2,
+    "kind": "synthesized_audio",
+    "raw_text": "同桌，你好~我是爱弥斯。今天完成了3项测试……准备好了吗？Ow< 😊",
+    "spoken_text": "同桌，你好。我是爱弥斯。今天完成了3项测试……准备好了吗？Ow< 😊",
+    "seed": 42,
+    "cold_total_seconds": 13.642333486997813,
+    "backend_metrics": {
+      "provider": "cuda",
+      "fallback_reason": null,
+      "load_seconds": 10.688965622000978,
+      "synthesis_seconds": 2.3842965250005363,
+      "text_split_method": "cut3",
+      "fragment_interval": 0.35,
+      "fade_ms": 15
+    }
+  },
+  {
+    "file": "step5-cleaning.wav",
+    "sha256": "18d239c09ff0bbc8499df9415463b0a147f81ff7a1074070359559a88e085a4f",
+    "duration_seconds": 6.87,
+    "sample_rate": 32000,
+    "channels": 1,
+    "sample_width_bytes": 2,
+    "kind": "synthesized_audio",
+    "raw_text": "同桌，你好~我是爱弥斯。今天完成了3项测试……准备好了吗？Ow< 😊",
+    "spoken_text": "同桌，你好！我是爱弥斯。今天完成了三项测试，准备好了吗？",
+    "seed": 42,
+    "cold_total_seconds": 15.33011422099662,
+    "backend_metrics": {
+      "provider": "cuda",
+      "fallback_reason": null,
+      "load_seconds": 12.130005686005461,
+      "synthesis_seconds": 2.6539031120046275,
+      "text_split_method": "cut3",
+      "fragment_interval": 0.35,
+      "fade_ms": 15
+    }
+  }
+]
