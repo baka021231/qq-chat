@@ -1,5 +1,5 @@
 import unittest
-from qq_chat.speech_runtime import RecoveringEngine, SESSIONS
+from qq_chat.speech_runtime import RecoveringEngine, SESSIONS, fade_audio, segment_fades
 
 
 class Session:
@@ -50,3 +50,29 @@ class RecoveryTests(unittest.TestCase):
         engine = RecoveringEngine(load, 'full', 'saver', 'cpu')
         with self.assertRaises(RuntimeError): engine.synthesize('你好')
         self.assertEqual(calls, [('full', 'cpu')])
+
+
+class SegmentTests(unittest.TestCase):
+    def test_fade_preserves_length_center_and_original(self):
+        original = [1.0] * 3200
+        result = fade_audio(original)
+        self.assertEqual(len(result), len(original))
+        self.assertEqual(result[0], 0)
+        self.assertEqual(result[-1], 0)
+        self.assertEqual(result[480:-480], [1.0] * (3200 - 960))
+        self.assertEqual(original, [1.0] * 3200)
+        self.assertTrue(all(a <= b for a, b in zip(result[:479], result[1:480])))
+
+    def test_short_segments_and_invalid_fade(self):
+        for length in (0, 1, 2, 3, 10):
+            self.assertEqual(len(fade_audio([1.0] * length)), length)
+        with self.assertRaises(ValueError): fade_audio([1.0], milliseconds=30)
+
+    def test_fades_apply_to_every_engine_segment(self):
+        class MultiSegment:
+            def _synthesize_segment(self, text): return [1.0] * 100
+            def synthesize(self):
+                return self._synthesize_segment('第一句') + [0.0] * 11200 + self._synthesize_segment('第二句')
+        result = segment_fades(MultiSegment()).synthesize()
+        self.assertEqual([result[i] for i in (0, 99, 11300, 11399)], [0, 0, 0, 0])
+        self.assertEqual(result[100:11300], [0.0] * 11200)
