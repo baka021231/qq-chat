@@ -209,6 +209,7 @@ class MessagePolicyTests(unittest.TestCase):
             bridge.db = sqlite3.connect(':memory:')
             bridge.db.executescript('''
                 CREATE TABLE threads (conversation TEXT PRIMARY KEY, thread_id TEXT);
+                CREATE TABLE conversation_models (conversation TEXT PRIMARY KEY, model TEXT NOT NULL, effort TEXT);
                 CREATE TABLE bootstrap (thread_id TEXT PRIMARY KEY);
                 CREATE TABLE history (role TEXT, content TEXT, conversation TEXT);
                 CREATE TABLE group_context (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER, content TEXT);

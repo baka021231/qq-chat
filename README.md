@@ -82,6 +82,15 @@ python3 -m qq_chat
 python3 tools/restart_bridge.py
 ```
 
+## 模型选择（仅主号）
+
+- `/models`：读取当前账号的可选模型，包含必要的图片能力提示。
+- `/model`：查询当前会话模型设置；未设置时查询接口的当前型号。
+- `/model 模型名`：校验可选列表并保存当前会话选择，下一条消息生效，保留聊天记录。
+- `/model default`：解析并切换到 Codex 当前配置的默认模型。
+
+模型选择保存在 `chat.sqlite3` 的 `conversation_models` 表；重启和 `/new` 后保留，只影响当前主号会话。群友和私聊白名单访客不能查询或切换模型。切换时采用该模型目录中给出的默认推理强度，不修改全局 Codex 配置。若默认模型不在可选目录中，命令会拒绝切换。
+
 ## 版本管理
 
 代码用 git 管理。修改前确认工作区干净，改完运行测试再提交；改功能时在同一个提交里更新 `docs/FEATURES.md` 和 `docs/CHANGELOG.md`；出问题时用 `git revert` 回滚后重启。不再新建 `archive/backups/` 备份。

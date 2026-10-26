@@ -19,6 +19,7 @@ class CommandAuthTests(unittest.IsolatedAsyncioTestCase):
         self.bridge.db = sqlite3.connect(':memory:')
         self.bridge.db.executescript('''
             CREATE TABLE threads (conversation TEXT PRIMARY KEY, thread_id TEXT);
+            CREATE TABLE conversation_models (conversation TEXT PRIMARY KEY, model TEXT NOT NULL, effort TEXT);
             CREATE TABLE history (role TEXT, content TEXT, conversation TEXT);
             CREATE TABLE old_threads (conversation TEXT, thread_id TEXT, time REAL);
         ''')
@@ -53,7 +54,7 @@ class CommandAuthTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_group_member_cannot_reset_or_read_session_or_use_future_commands(self):
         before = self.snapshot()
-        for command in ('/new', '/session', '/block 123', '/unblock 789', '/blacklist', '/effort max', '/future', '/NEW', '/new extra'):
+        for command in ('/new', '/session', '/model', '/models', '/model test-model', '/block 123', '/unblock 789', '/blacklist', '/effort max', '/future', '/NEW', '/new extra'):
             await self.dispatch(Source('group', 999, 789, '心糖'), command)
             self.assertIn('仅限主号', self.sent[-1])
             self.assertNotIn('id-group', self.sent[-1])
@@ -70,7 +71,7 @@ class CommandAuthTests(unittest.IsolatedAsyncioTestCase):
     async def test_private_whitelist_guest_has_no_management_permissions(self):
         self.bridge.cfg['private_whitelist'] = [789]
         before = self.snapshot()
-        for command in ('/new', '/session', '/block 123', '/unblock 789', '/blacklist'):
+        for command in ('/new', '/session', '/model', '/models', '/model test-model', '/block 123', '/unblock 789', '/blacklist'):
             await self.dispatch(Source('private', 789, 789), command)
             self.assertIn('仅限主号', self.sent[-1])
             self.assertEqual(self.snapshot(), before)

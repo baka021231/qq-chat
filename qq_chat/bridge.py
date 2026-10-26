@@ -15,6 +15,7 @@ from .files import MAX_FILE_BYTES, save_attachment
 from .images import MAX_IMAGE_BYTES, save_image
 from .reply import stream_bubbles
 from .moderation import BLOCK_SENDER, blocked_group_sender, bounded_guest_reply, obvious_abuse, update_blacklist
+from .models import available_models, configured_default
 
 from websockets.asyncio.client import connect
 
@@ -147,6 +148,7 @@ class Bridge:
             self.db.execute("ALTER TABLE history ADD COLUMN conversation TEXT")
             self.db.execute("UPDATE history SET conversation=?", (f"private:{int(cfg['owner_qq'])}",))
         self.db.execute("CREATE TABLE IF NOT EXISTS threads (conversation TEXT PRIMARY KEY, thread_id TEXT NOT NULL)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS conversation_models (conversation TEXT PRIMARY KEY, model TEXT NOT NULL, effort TEXT)")
         self.db.execute("CREATE TABLE IF NOT EXISTS bootstrap (thread_id TEXT PRIMARY KEY)")
         self.db.execute("CREATE TABLE IF NOT EXISTS old_threads (conversation TEXT, thread_id TEXT, time REAL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS group_context (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER, content TEXT)")
@@ -280,15 +282,71 @@ class Bridge:
                    "developerInstructions": await self.instructions(authorized, group_moderation=source.kind == 'group')}
         await self.app.start()
         conversation = self.conversation(source)
+        selection = self.db.execute('SELECT model, effort FROM conversation_models WHERE conversation=?', (conversation,)).fetchone()
+        if selection:
+            options['model'] = selection[0]
+            if selection[1] is not None:
+                options['config'] = {'model_reasoning_effort': selection[1]}
         row = self.db.execute("SELECT thread_id FROM threads WHERE conversation=?", (conversation,)).fetchone()
         if row:
-            await self.app.call("thread/resume", {"threadId": row[0], **options})
-            return row[0]
+            try:
+                result = await self.app.call("thread/resume", {"threadId": row[0], **options})
+            except RuntimeError as error:
+                if 'no rollout found for thread id' not in str(error):
+                    raise
+                # Threads created by /model before the first actual turn have no rollout.
+                with contextlib.suppress(Exception):
+                    await self.app.call('thread/unsubscribe', {'threadId': row[0]})
+            else:
+                self.__dict__.setdefault('_thread_models', {})[row[0]] = result.get('model')
+                return row[0]
         result = await self.app.call("thread/start", {**options, "ephemeral": False})
         thread = result["thread"]["id"]
-        self.db.execute("INSERT INTO threads VALUES (?, ?)", (conversation, thread))
+        self.db.execute("INSERT INTO threads VALUES (?, ?) ON CONFLICT(conversation) DO UPDATE SET thread_id=excluded.thread_id", (conversation, thread))
         self.db.commit()
+        self.__dict__.setdefault('_thread_models', {})[thread] = result.get('model')
         return thread
+
+    async def model_command(self, source, text):
+        # Defense in depth: never query the catalog or change a thread for a guest.
+        if not owner_request(source, self.cfg['owner_qq']):
+            await self.send(source, '模型管理仅限主号使用。')
+            return
+        parts = text.split()
+        if parts == ['/models']:
+            models = await available_models(self.app)
+            names = [name + ('（仅文字）' if 'image' not in info.get('inputModalities', ['text', 'image']) else '')
+                     for name, info in models.items()]
+            await self.send(source, '可选模型：\n' + '\n'.join(names) if names else '当前没有可选模型。')
+            return
+        if parts == ['/model']:
+            selection = self.db.execute('SELECT model FROM conversation_models WHERE conversation=?', (self.conversation(source),)).fetchone()
+            if selection:
+                await self.send(source, '当前会话模型设置：' + selection[0] + '，下一轮使用。')
+                return
+            thread = await self.thread_for(source, True)
+            model = self._thread_models.get(thread)
+            await self.send(source, '当前会话模型：' + (model or '接口未返回实际模型，暂时无法确认。'))
+            return
+        if len(parts) != 2 or parts[0] != '/model':
+            await self.send(source, '用法：/models 列表；/model 查看；/model 模型名 切换；/model default 恢复默认。')
+            return
+        models = await available_models(self.app)
+        name = await configured_default(self.app, BASE / 'workspace') if parts[1] == 'default' else parts[1]
+        if name not in models:
+            await self.send(source, '这个模型不在当前可选列表中，请先用 /models 查看。')
+            return
+        effort = models[name].get('defaultReasoningEffort')
+        try:
+            self.db.execute('INSERT INTO conversation_models VALUES (?, ?, ?) '
+                            'ON CONFLICT(conversation) DO UPDATE SET model=excluded.model, effort=excluded.effort',
+                            (self.conversation(source), name, effort))
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        notice = '该模型仅支持文字。' if 'image' not in models[name].get('inputModalities', ['text', 'image']) else ''
+        await self.send(source, '当前会话已选择 ' + name + '，下一条消息使用该模型，聊天上下文保留。' + notice)
 
     def turn_text(self, source, thread, text, context_id):
         """Prefix old-bridge history (until the thread is bootstrapped) and recent group context."""
@@ -340,11 +398,13 @@ class Bridge:
 
         reporter = asyncio.create_task(self.relay_progress(source, progress_queue)) if authorized else None
         answer_sender = asyncio.create_task(self.relay_answer(source, answer_queue)) if authorized else None
+        selection = self.db.execute('SELECT model, effort FROM conversation_models WHERE conversation=?', (self.conversation(source),)).fetchone()
+        model_options = {'model': selection[0], 'effort': selection[1]} if selection else {}
         try:
             reply = await self.app.turn(thread, text, on_progress=progress if authorized else None,
                                         on_answer=answer_delta if authorized else None,
                                         show_tools=bool(self.cfg.get('show_tool_progress', False)),
-                                        image_paths=image_paths)
+                                        image_paths=image_paths, **model_options)
             if answer_sender:
                 answer_queue.put_nowait(None)
                 await asyncio.wait_for(asyncio.shield(answer_sender), 120)
@@ -390,6 +450,13 @@ class Bridge:
                         and not owner_request(source, self.cfg['owner_qq'])):
                     await self.send(source, '这类管理命令仅限主号使用；你可以继续聊天，或使用 /ping、/help。')
                     continue
+                if text.split(maxsplit=1)[:1] in (['/model'], ['/models']):
+                    try:
+                        await self.model_command(source, text)
+                    except (RuntimeError, OSError, ValueError, sqlite3.Error, asyncio.TimeoutError):
+                        logging.warning('Model management failed')
+                        await self.send(source, '模型操作未完成，请稍后重试；用 /model 可重新检查当前状态。')
+                    continue
                 if incoming.attachments:
                     try:
                         text = await self.receive_attachments(incoming)
@@ -432,7 +499,7 @@ class Bridge:
                         continue
                     await self.send(source, '已加入群聊用户黑名单。' if parts[0] == '/block' else '已解除群聊用户拉黑。')
                 elif text == "/help":
-                    await self.send(source, "Aemeath：主号在私聊或群聊可请求Linux操作，其他人仅文字聊天；Windows文件只读。群聊需@机器人并附文字或图片，或喊Aemeath、爱弥斯、ams、小爱（英文不分大小写）。图片识别仅主号可用，每条最多5张、每张20 MiB，支持PNG、JPEG、WebP、GIF。文件附件仅主号私聊接收。/ping、/help 所有人可用；/new 创建新会话、/session 查看会话ID、/blacklist 查看群聊用户黑名单、/block QQ号 拉黑、/unblock QQ号 解除拉黑仅限主号。黑名单用户的群消息静默忽略。")
+                    await self.send(source, "Aemeath：主号在私聊或群聊可请求Linux操作，其他人仅文字聊天；Windows文件只读。群聊需@机器人并附文字或图片，或喊Aemeath、爱弥斯、ams、小爱（英文不分大小写）。图片识别仅主号可用，每条最多5张、每张20 MiB，支持PNG、JPEG、WebP、GIF。文件附件仅主号私聊接收。/ping、/help 所有人可用；/new 创建新会话、/session 查看会话ID、/models 查看可选模型、/model 查看当前模型、/model 模型名 切换、/model default 恢复默认、/blacklist 查看群聊用户黑名单、/block QQ号 拉黑、/unblock QQ号 解除拉黑仅限主号。黑名单用户的群消息静默忽略。")
                 elif len(text) > 6000:
                     await self.send(source, "这条消息较长，请拆成每条不超过6000字。")
                 else:

@@ -39,6 +39,7 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔 1.5 秒，每�
 | `files.py` | 安全保存附件（不跟随符号链接、限制大小、不覆盖） | 无 |
 | `images.py` | 获取并校验图片（域名白名单、文件头识别格式） | `files` |
 | `moderation.py` | 群聊用户黑名单、明确滥用检测、群友输出限制、加锁原子保存配置 | 无 |
+| `models.py` | 分页读取可见模型、解析 Codex 配置的默认型号 | 无 |
 
 `bridge.py` 编排其他模块，`prompts.py` 从 `moderation.py` 引入内部拉黑标记。新功能如果不需要访问 `Bridge` 的状态，优先在包里写成独立模块；从 `bridge.py` 拆出功能时也放在包里。运行时文件（`config.json`、`chat.sqlite3`、`workspace/`）在项目根目录，由 `bridge.BASE` 指向。
 
@@ -91,6 +92,7 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔 1.5 秒，每�
 | --- | --- |
 | `seen` | 已处理的消息 ID，保留 7 天 |
 | `threads` | 会话键 → Codex 线程 ID |
+| `conversation_models` | 会话键 → 用户选择的模型和该模型默认推理强度，重启及 `/new` 时保留 |
 | `old_threads` | `/new` 归档的旧映射 |
 | `bootstrap` | 已导入过旧历史的线程 |
 | `history` | 每轮的问答记录；现在只用于新线程导入（遗留） |
@@ -106,6 +108,8 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔 1.5 秒，每�
 - systemd 用户服务 `qq-bridge.service`：`ExecStart=/usr/bin/python3 -u -m qq_chat`，工作目录为项目根目录（`-m` 依赖它找到包）
 
 ## 常见改动
+
+模型管理由 `Bridge.model_command()` 执行，worker 先检查主号权限，处理函数再次检查。命令验证目录后保存选择；`thread_for()` 在创建/恢复时传入选择，`run_turn()` 还会在每次 `turn/start` 明确传入所选模型及推理强度，避免已加载线程忽略恢复覆盖。`_thread_models` 仅缓存接口返回值，未设置偏好时用于状态显示；已设置时显示下一轮使用的型号，不把尚未生成的选择冒充为已完成的切换。空线程可能尚无 rollout，遇到该特定错误时重建映射，历史表不清空。
 
 - **加一个命令**：在 `worker()` 的 if/elif 中加一个分支。默认只有主号可用；如果要对所有人开放，把命令加进开头的白名单元组 `('/ping', '/help')`。同时在 `/help` 文字和 `docs/FEATURES.md` 的命令表里补上，并在 `tests/test_command_auth.py` 加测试。
 - **改提示词**：改 `prompts.py`。机器人的人设和回复格式属于 `workspace/AGENTS.md`，不要写进代码。

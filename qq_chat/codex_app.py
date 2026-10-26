@@ -98,14 +98,19 @@ class AppServer:
             for q in self.events.values():
                 q.put_nowait({'method': 'disconnected'})
 
-    async def turn(self, thread, text, on_progress=None, on_answer=None, show_tools=False, image_paths=()):
+    async def turn(self, thread, text, on_progress=None, on_answer=None, show_tools=False, image_paths=(), model=None, effort=None):
         q = asyncio.Queue()
         self.events[thread] = q
         turn_id = None
         try:
             inputs = [{'type': 'text', 'text': text}]
             inputs.extend({'type': 'localImage', 'path': str(path)} for path in image_paths)
-            result = await self.call('turn/start', {'threadId': thread, 'input': inputs})
+            params = {'threadId': thread, 'input': inputs}
+            if model is not None:
+                params['model'] = model
+            if effort is not None:
+                params['effort'] = effort
+            result = await self.call('turn/start', params)
             turn_id = result['turn']['id']
             messages = {}
             phases, streamed = {}, {}
