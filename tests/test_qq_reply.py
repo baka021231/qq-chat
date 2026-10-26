@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 
-from qq_reply import BubbleStream, sentence_ends, stream_bubbles
+from qq_chat.reply import BubbleStream, sentence_ends, stream_bubbles
 
 
 def bubbles(text, width=1, target=80):

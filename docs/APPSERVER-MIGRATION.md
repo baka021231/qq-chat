@@ -8,7 +8,7 @@
 $CODEX_HOME/app-server-control/app-server-control.sock
 ```
 
-`CODEX_HOME` 未设置时为 `~/.codex`。守护进程同时服务终端里的 Codex 会话，桥接退出时只断开自己的连接，不停止守护进程。实现见 `codex_app.py`。
+`CODEX_HOME` 未设置时为 `~/.codex`。守护进程同时服务终端里的 Codex 会话，桥接退出时只断开自己的连接，不停止守护进程。实现见 `qq_chat/codex_app.py`。
 
 ## 会话映射
 

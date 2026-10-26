@@ -2,6 +2,13 @@
 
 ## 2026-10-26
 
+### 程序移入 `qq_chat/` 包
+
+- 6 个模块移入 `qq_chat/`，去掉重复的 `qq_` 前缀：`qq_bridge.py` → `qq_chat/bridge.py`，`qq_reply.py` → `reply.py`，`qq_files.py` → `files.py`，`qq_images.py` → `images.py`；`codex_app.py`、`prompts.py` 名称不变。包内改用相对导入。
+- 启动方式改为在项目根目录运行 `python3 -m qq_chat`。本机 systemd 服务的 `ExecStart` 已同步修改（服务文件不在仓库里）。
+- `tools/restart_bridge.py` 用新方式启动，并能同时识别新旧两种启动方式的进程，从旧版本切换时不会漏掉旧实例。
+- 行为不变，测试只更新了导入路径和 patch 目标。
+
 ### 新增功能说明与开发文档
 
 - 新增 `docs/FEATURES.md`：角色与权限、收发规则、图片与附件、命令、不支持的功能和已知问题。

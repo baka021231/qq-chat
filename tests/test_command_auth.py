@@ -4,7 +4,7 @@ import contextlib
 import sqlite3
 import unittest
 
-from qq_bridge import Bridge, Incoming, Source
+from qq_chat.bridge import Bridge, Incoming, Source
 
 
 class CommandAuthTests(unittest.IsolatedAsyncioTestCase):

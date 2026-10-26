@@ -8,9 +8,9 @@ import unittest
 from unittest.mock import patch
 import zlib
 
-from codex_app import AppServer
-from qq_bridge import Bridge, Incoming, Source, incoming_text
-from qq_images import MAX_IMAGE_BYTES, QQImageRedirect, check_image_url, save_image
+from qq_chat.codex_app import AppServer
+from qq_chat.bridge import Bridge, Incoming, Source, incoming_text
+from qq_chat.images import MAX_IMAGE_BYTES, QQImageRedirect, check_image_url, save_image
 
 
 def sample_png():
@@ -78,14 +78,14 @@ class ImageTests(unittest.TestCase):
             class Opener:
                 def open(self, request, timeout):
                     return Response(sample_png())
-            with patch('qq_images.build_opener', return_value=Opener()):
+            with patch('qq_chat.images.build_opener', return_value=Opener()):
                 saved = save_image('/missing/cache.png', 'https://gchat.qpic.cn/a', output)
             self.assertEqual(saved.read_bytes(), sample_png())
             class HugeOpener:
                 def open(self, request, timeout):
                     return Response(b'a' * 1025)
             before = set(output.iterdir())
-            with patch('qq_images.build_opener', return_value=HugeOpener()), patch('qq_images.MAX_IMAGE_BYTES', 1024):
+            with patch('qq_chat.images.build_opener', return_value=HugeOpener()), patch('qq_chat.images.MAX_IMAGE_BYTES', 1024):
                 with self.assertRaisesRegex(ValueError, '20 MiB'):
                     save_image('', 'https://gchat.qpic.cn/a', output)
             self.assertEqual(set(output.iterdir()), before)
@@ -101,7 +101,7 @@ class ImageTests(unittest.TestCase):
             bridge.onebot_call = onebot
             own = Source('private', 123, 123)
             image = {'file': 'pic', 'url': 'https://gchat.qpic.cn/a'}
-            with patch('qq_bridge.save_image', return_value=Path('/tmp/image.png')) as save:
+            with patch('qq_chat.bridge.save_image', return_value=Path('/tmp/image.png')) as save:
                 result = await bridge.receive_images(Incoming(own, '', images=(image,)))
                 self.assertEqual(result, ['/tmp/image.png'])
                 save.assert_called_once_with('', image['url'])
@@ -131,7 +131,7 @@ class ImageTests(unittest.TestCase):
 
     def test_worker_forwards_images_and_saves_history(self):
         async def check():
-            with tempfile.TemporaryDirectory() as directory, patch('qq_bridge.BASE', Path(directory)):
+            with tempfile.TemporaryDirectory() as directory, patch('qq_chat.bridge.BASE', Path(directory)):
                 bridge = Bridge({'owner_qq': 123, 'codex_path': 'unused'})
                 calls, sent = [], []
                 async def receive(incoming):

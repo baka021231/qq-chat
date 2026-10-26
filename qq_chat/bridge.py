@@ -9,15 +9,15 @@ import sqlite3
 import time
 import uuid
 import unicodedata
-from codex_app import AppServer
-import prompts
-from qq_reply import stream_bubbles
-from qq_files import MAX_FILE_BYTES, save_attachment
-from qq_images import MAX_IMAGE_BYTES, save_image
+from . import prompts
+from .codex_app import AppServer
+from .files import MAX_FILE_BYTES, save_attachment
+from .images import MAX_IMAGE_BYTES, save_image
+from .reply import stream_bubbles
 
 from websockets.asyncio.client import connect
 
-BASE = Path(__file__).resolve().parent
+BASE = Path(__file__).resolve().parents[1]
 CONFIG = BASE / "config.json"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -468,7 +468,7 @@ class Bridge:
                 await asyncio.sleep(5)
 
 
-if __name__ == "__main__":
+def main():
     config = json.loads(CONFIG.read_text())
     if not str(config.get("owner_qq", "")).isdigit():
         raise SystemExit("Set owner_qq before starting the bridge")

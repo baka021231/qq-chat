@@ -28,16 +28,20 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔 1.5 秒，每�
 
 | 模块 | 职责 | 项目内依赖 |
 | --- | --- | --- |
-| `qq_bridge.py` | 入口与 `Bridge` 类：OneBot 收发、消息过滤、权限、命令、会话、调度 | 下面全部 |
+程序都在 `qq_chat/` 包里，入口是 `qq_chat/__main__.py`，用 `python3 -m qq_chat` 在项目根目录启动。包内模块之间用相对导入（`from .files import ...`）。
+
+| 模块 | 职责 | 包内依赖 |
+| --- | --- | --- |
+| `bridge.py` | `main()` 入口与 `Bridge` 类：OneBot 收发、消息过滤、权限、命令、会话、调度 | 下面全部 |
 | `codex_app.py` | `AppServer`：JSON-RPC 客户端、单轮对话事件处理；`progress_text` 生成进度文本 | 无 |
 | `prompts.py` | 发给模型的全部提示词与拼接函数 | 无 |
-| `qq_reply.py` | `BubbleStream`：把流式回复切成 QQ 气泡 | 无 |
-| `qq_files.py` | 安全保存附件（不跟随符号链接、限制大小、不覆盖） | 无 |
-| `qq_images.py` | 获取并校验图片（域名白名单、文件头识别格式） | `qq_files` |
+| `reply.py` | `BubbleStream`：把流式回复切成 QQ 气泡 | 无 |
+| `files.py` | 安全保存附件（不跟随符号链接、限制大小、不覆盖） | 无 |
+| `images.py` | 获取并校验图片（域名白名单、文件头识别格式） | `files` |
 
-依赖只从 `qq_bridge.py` 指向其他模块。新功能如果不需要访问 `Bridge` 的状态，优先写成独立模块。
+依赖只从 `bridge.py` 指向其他模块。新功能如果不需要访问 `Bridge` 的状态，优先在包里写成独立模块；从 `bridge.py` 拆出功能时也放在包里。运行时文件（`config.json`、`chat.sqlite3`、`workspace/`）在项目根目录，由 `bridge.BASE` 指向。
 
-## `qq_bridge.py` 的结构
+## `bridge.py` 的结构
 
 - **模块级纯函数**：`incoming_text()` 把 OneBot 事件转成 `Incoming` 或丢弃；`owner_request()` 判断权限；`conversation_key()` 决定会话键；`speaker_message()` 生成发言人标签。这几个函数不涉及 I/O，可以直接测试。
 - **`Bridge` 的方法**，按职责分组：
@@ -88,7 +92,7 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔 1.5 秒，每�
 - Python 3（当前使用 3.14），第三方库只有 `websockets`
 - NapCat（systemd 用户服务 `napcat.service`），在 `ws_url` 提供 OneBot 11 WebSocket
 - Codex CLI（`codex_path`），由桥接运行 `codex app-server daemon start` 启动守护进程
-- systemd 用户服务 `qq-bridge.service`，工作目录为项目根目录
+- systemd 用户服务 `qq-bridge.service`：`ExecStart=/usr/bin/python3 -u -m qq_chat`，工作目录为项目根目录（`-m` 依赖它找到包）
 
 ## 常见改动
 
@@ -108,7 +112,7 @@ python3 -m unittest discover -s tests -v
 - 用 `Bridge.__new__(Bridge)` 跳过 `__init__`，手动设置 `cfg`、`db`（`sqlite3.connect(':memory:')`）和需要的属性。
 - 把 `bridge.app` 换成假的 App Server 对象，记录 `call` 和 `turn` 的参数，用来断言权限和提示词。
 - 把 `bridge.send` 换成记录发送内容的函数。
-- 需要文件系统时，用 `patch('qq_bridge.BASE', 临时目录)`。
+- 需要文件系统时，用 `patch('qq_chat.bridge.BASE', 临时目录)`。
 
 ## 开发约定
 

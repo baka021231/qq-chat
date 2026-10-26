@@ -30,7 +30,7 @@
 
 ## 回复
 
-- **主号**：回复流式发送，按段落、列点、句子切成多条 QQ 消息（`qq_reply.BubbleStream`，`tests/test_qq_reply.py`）。Codex 的中途发言和计划更新以"【进度】"消息推送；工具调用摘要只在 `show_tool_progress` 开启时推送（`progress_text`，`test_tools_hidden_by_default`）。
+- **主号**：回复流式发送，按段落、列点、句子切成多条 QQ 消息（`reply.BubbleStream`，`tests/test_qq_reply.py`）。Codex 的中途发言和计划更新以"【进度】"消息推送；工具调用摘要只在 `show_tool_progress` 开启时推送（`progress_text`，`test_tools_hidden_by_default`）。
 - **群友**：整轮结束后一次性发送，不推送进度；最多 12000 字，超出部分截断。
 - **通用限制**：所有消息（含进度）间隔至少 1.5 秒；单条超过 1600 字时拆开发送。
 - **自动 @**：群聊回复 `mention_qq` 里的人时，会在开头 @ 对方。

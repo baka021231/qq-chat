@@ -4,7 +4,7 @@ import tempfile
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from qq_files import DOWNLOADS, save_attachment
+from .files import DOWNLOADS, save_attachment
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 

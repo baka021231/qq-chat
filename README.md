@@ -6,11 +6,12 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 
 | 路径 | 用途 |
 | --- | --- |
-| `qq_bridge.py` | 消息接收、权限、会话与回复调度 |
-| `codex_app.py` | Codex App Server 客户端 |
-| `prompts.py` | 发给模型的提示词（权限指令、历史与群聊上下文、附件和图片说明） |
-| `qq_reply.py` | QQ 回复分段与流式发送 |
-| `qq_files.py`、`qq_images.py` | 文件和图片接收 |
+| `qq_chat/` | 桥接程序包，用 `python3 -m qq_chat` 启动 |
+| `qq_chat/bridge.py` | 消息接收、权限、会话与回复调度 |
+| `qq_chat/codex_app.py` | Codex App Server 客户端 |
+| `qq_chat/prompts.py` | 发给模型的提示词（权限指令、历史与群聊上下文、附件和图片说明） |
+| `qq_chat/reply.py` | QQ 回复分段与流式发送 |
+| `qq_chat/files.py`、`qq_chat/images.py` | 文件和图片接收 |
 | `tests/` | 离线回归测试 |
 | `tools/` | 当前可用的连接检查、重启工具 |
 | `docs/FEATURES.md` | 功能说明：能做什么、限制、不支持的功能、已知问题 |
@@ -64,6 +65,13 @@ python3 tools/verify_onebot.py
 
 ```sh
 systemctl --user status qq-bridge.service
+```
+
+手动在前台运行（调试用；先停止服务，避免两个实例同时回复）：
+
+```sh
+systemctl --user stop qq-bridge.service
+python3 -m qq_chat
 ```
 
 需要重启时，在当前回复发送完成后运行：

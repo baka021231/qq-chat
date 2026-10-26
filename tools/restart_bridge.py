@@ -8,7 +8,9 @@ import sys
 import time
 
 BASE = Path(__file__).resolve().parents[1]
-SCRIPT = BASE / 'qq_bridge.py'
+PACKAGE = 'qq_chat'
+# Instances started before the qq_chat package existed ran this script directly.
+LEGACY_SCRIPT = BASE / 'qq_bridge.py'
 LOG = BASE / 'qq_bridge.log'
 
 
@@ -23,11 +25,15 @@ def bridges():
             if not argv or not Path(argv[0]).name.startswith('python'):
                 continue
             cwd = (proc / 'cwd').resolve(strict=True)
+            module = any(a == '-m' and b == PACKAGE for a, b in zip(argv[1:], argv[2:]))
+            if module and cwd == BASE:
+                result.append(int(proc.name))
+                continue
             for arg in argv[1:]:
-                if Path(arg).name != SCRIPT.name:
+                if Path(arg).name != LEGACY_SCRIPT.name:
                     continue
                 path = Path(arg)
-                if (path if path.is_absolute() else cwd / path).resolve() == SCRIPT:
+                if (path if path.is_absolute() else cwd / path).resolve() == LEGACY_SCRIPT:
                     result.append(int(proc.name))
                     break
         except (OSError, ValueError):
@@ -69,7 +75,7 @@ def main():
     fd = os.open(LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(fd, 'ab', buffering=0) as log:
         offset = os.fstat(log.fileno()).st_size
-        child = subprocess.Popen([sys.executable, '-u', str(SCRIPT)], cwd=BASE,
+        child = subprocess.Popen([sys.executable, '-u', '-m', PACKAGE], cwd=BASE,
                                  stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                  start_new_session=True)
     print('新桥接进程 PID：', child.pid, flush=True)

@@ -7,14 +7,14 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from codex_app import AppServer, progress_text
-from qq_bridge import Bridge, Source, incoming_text, speaker_message, owner_request, conversation_key
+from qq_chat.codex_app import AppServer, progress_text
+from qq_chat.bridge import Bridge, Source, incoming_text, speaker_message, owner_request, conversation_key
 
 
 class MessagePolicyTests(unittest.TestCase):
     def test_quiet_group_messages_are_reference_without_triggering_reply(self):
         async def check():
-            with tempfile.TemporaryDirectory() as directory, patch('qq_bridge.BASE', Path(directory)):
+            with tempfile.TemporaryDirectory() as directory, patch('qq_chat.bridge.BASE', Path(directory)):
                 bridge = Bridge({'owner_qq': 123, 'codex_path': 'unused'})
                 base = {'post_type': 'message', 'message_type': 'group', 'self_id': 456,
                         'group_id': 999, 'user_id': 789, 'sender': {'nickname': '群友'}}
@@ -214,7 +214,7 @@ class MessagePolicyTests(unittest.TestCase):
                     root = Path(directory)
                     (root / 'workspace').mkdir()
                     rules = root / 'workspace' / 'AGENTS.md'
-                    with patch('qq_bridge.BASE', root):
+                    with patch('qq_chat.bridge.BASE', root):
                         rules.write_text('规则版本一', encoding='utf-8')
                         await bridge.chat(Source('group', 999, 123), 'test')
                         self.assertIn('规则版本一', calls[-1][1]['developerInstructions'])
