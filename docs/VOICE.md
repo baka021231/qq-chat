@@ -1,5 +1,17 @@
 # 本地爱弥斯语音
 
+## 优化步骤与回退（2026-10-27）
+
+原始样本、每步 WAV、指标、GPU 检查和原语音配置快照保存在本地 `workspace/voice-tests/20261027-optimization/`。同一原文、种子 42；耗时同时标注冷启动总耗时和后端可报告的加载/合成耗时，不将不同口径混为速度提升。
+
+GPU 环境为 `~/.local/share/aemeath-voice/gpu-venv/`，完整模型为 `~/.local/share/aemeath-voice/model-fp32/ONNX_aimisiV2/`；原 CPU 环境和节约包不变。完整包校验和为 `06738ab0a0c9e875cee85f3fc25b06b65380081e6041120591e37ebfb709b8ed`。它是非整数权重量化的完整档，上游 RoBERTa 本身仍为 FP16。
+
+后端参数 `--provider auto` 优先 CUDA；`--cpu-model-dir` 指定 CPU 回退模型。主要 ONNX 会话未实际启用 CUDA、初始化错误或推理异常时，释放引擎并加载 CPU 模型，同一请求最多回退一次。响应 `metrics` 给出实际 provider、回退异常类型、加载和合成耗时；桥接只取音频，不把这些指标念出来。`--provider cpu` 强制用 `--model-dir` 的 CPU 推理。
+
+GPU 环境依赖记录于 `requirements-voice-gpu.lock`。`genie-tts` 会依赖 CPU 版 `onnxruntime`；两个发行包共享 Python 模块，普通安装可能覆盖 GPU 二进制。须在最后重新安装 `onnxruntime-gpu==1.22.0 --no-deps --reinstall`，并实际核对 `get_available_providers()` 和模型会话；仅安装了 GPU 包不代表 GPU 已生效。CUDA/cuDNN 库通过 GPU 包的 extras 安装并由 `preload_dlls(directory='')` 加载，WSL 驱动来自系统已有接口。
+
+回退配置：从样本目录的 `voice-config-before.json` 仅恢复 `voice` 字段，保留其他配置；代码按各步骤 Git 提交单独 `git revert`。配置变更在回复结束后重启加载。没有重新开启日常语音。
+
 启用后，正常聊天的最终回复先发文字，再补同内容的语音。进度、命令和错误提示仍只发文字。语音输出是桥接功能，群友没有因此获得调用工具或操作电脑的权限。
 
 ## 安装记录
