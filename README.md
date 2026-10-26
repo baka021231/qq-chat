@@ -27,7 +27,7 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 | --- | --- |
 | `config.json`、`chat.sqlite3`、`qq_bridge.log`、`.bridge-restart.lock` | 运行时配置、聊天数据和日志 |
 | `archive/` | 引入 git 前的备份、一次性脚本和执行记录 |
-| `workspace/` | QQ 工作台规则（`AGENTS.md`）与用户项目 |
+| `workspace/` | QQ 工作台：Codex 原生规则 `AGENTS.md`、桥接注入 `SOUL.md` / `OWNER.md` 与用户项目 |
 
 配置和聊天数据属于私人数据，不应提交或公开。
 
@@ -104,3 +104,7 @@ python3 tools/restart_bridge.py
 ### 会话推理强度（仅主号）
 
 `/effort` 查询当前模型、强度和支持档位；`/effort 档位` 设置；`/effort default` 恢复当前模型目录默认强度。按实时模型目录校验，不支持的档位或查询失败不更改原设置。沿用 `conversation_models` 保存，下一条消息生效，重启和 `/new` 保留，只影响当前主号会话。未选择模型时首次设置会固定当前会话模型；再次 `/model` 切换会重置为所选模型默认强度。
+
+## 工作台设定加载
+
+桥接每轮按顺序读取 `workspace/SOUL.md`、`workspace/OWNER.md`，将存在的文件注入 developerInstructions；缺失文件跳过，不回退读取 AGENTS.md，也不自动创建或迁移文件。两个文件目前均对主号和访客会话注入，请勿放入秘密资料。`workspace/AGENTS.md` 仅由 Codex 按工作目录原生加载，桥接不再手动注入。

@@ -257,15 +257,26 @@ class MessagePolicyTests(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
                     (root / 'workspace').mkdir()
-                    rules = root / 'workspace' / 'AGENTS.md'
+                    rules = root / 'workspace' / 'SOUL.md'
+                    owner_rules = root / 'workspace' / 'OWNER.md'
+                    (root / 'workspace' / 'AGENTS.md').write_text('原生规则不应注入', encoding='utf-8')
                     with patch('qq_chat.bridge.BASE', root):
                         rules.write_text('规则版本一', encoding='utf-8')
+                        owner_rules.write_text('主人资料', encoding='utf-8')
                         await bridge.chat(Source('group', 999, 123), 'test')
                         self.assertIn('规则版本一', calls[-1][1]['developerInstructions'])
+                        self.assertIn('主人资料', calls[-1][1]['developerInstructions'])
+                        self.assertNotIn('原生规则不应注入', calls[-1][1]['developerInstructions'])
                         rules.write_text('规则版本二', encoding='utf-8')
                         await bridge.chat(Source('group', 999, 789), 'test')
                         self.assertIn('规则版本二', calls[-1][1]['developerInstructions'])
                         self.assertNotIn('规则版本一', calls[-1][1]['developerInstructions'])
+                        rules.unlink()
+                        owner_rules.unlink()
+                        await bridge.chat(Source('group', 999, 789), 'test')
+                        self.assertNotIn('规则版本二', calls[-1][1]['developerInstructions'])
+                        self.assertNotIn('主人资料', calls[-1][1]['developerInstructions'])
+                        self.assertNotIn('原生规则不应注入', calls[-1][1]['developerInstructions'])
                         self.assertEqual(calls[-1][1]['sandbox'], 'read-only')
                 bridge.cfg['private_whitelist'] = [789]
                 await bridge.chat(Source('private', 789, 789), '你好')

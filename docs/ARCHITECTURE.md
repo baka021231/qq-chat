@@ -14,7 +14,7 @@ NapCat ──WebSocket──▶ Bridge.session()  事件分发、过滤、去重
                          │
                          ▼
                       Bridge.chat()
-                         ├ instructions()  prompts.py + workspace/AGENTS.md
+                         ├ instructions()  prompts.py + workspace/SOUL.md + workspace/OWNER.md
                          ├ thread_for()    恢复或新建 Codex 线程
                          ├ turn_text()     拼接旧历史、群聊上下文
                          └ run_turn()      AppServer.turn()
@@ -79,7 +79,7 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔随机 2～3 �
 
 发给 Codex 的内容分两部分：
 
-- **developerInstructions**：`prompts.OWNER` / `GUEST` + `SPEAKER_LABELS` + `WORKSPACE_RULES` + `workspace/AGENTS.md` 全文。每次 `thread/start` 或 `thread/resume` 时传入，所以修改提示词或 AGENTS.md 后，下一轮就生效。
+- **developerInstructions**：`prompts.OWNER` / `GUEST` + `SPEAKER_LABELS` + `WORKSPACE_RULES` + `workspace/SOUL.md`、`workspace/OWNER.md` 中存在的文件全文（依次加载）。每次 `thread/start` 或 `thread/resume` 时重新读取并传入，缺失则跳过，下一轮生效。AGENTS.md 不由桥接读取或注入，保留 Codex 按 cwd 原生加载。
 - **本轮输入**，依次为：
   1. 群聊参考记录（`group_reference`，仅群聊）
   2. 旧历史（`history_import`，仅线程第一次运行，且该会话有旧记录时）
@@ -112,7 +112,7 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔随机 2～3 �
 模型管理由 `Bridge.model_command()` 执行，worker 先检查主号权限，处理函数再次检查。命令验证目录后保存选择；`thread_for()` 在创建/恢复时传入选择，`run_turn()` 还会在每次 `turn/start` 明确传入所选模型及推理强度，避免已加载线程忽略恢复覆盖。`_thread_models` 仅缓存接口返回值，未设置偏好时用于状态显示；已设置时显示下一轮使用的型号，不把尚未生成的选择冒充为已完成的切换。空线程可能尚无 rollout，遇到该特定错误时重建映射，历史表不清空。
 
 - **加一个命令**：在 `worker()` 的 if/elif 中加一个分支。默认只有主号可用；如果要对所有人开放，把命令加进开头的白名单元组 `('/ping', '/help')`。同时在 `/help` 文字和 `docs/FEATURES.md` 的命令表里补上，并在 `tests/test_command_auth.py` 加测试。
-- **改提示词**：改 `prompts.py`。机器人的人设和回复格式属于 `workspace/AGENTS.md`，不要写进代码。
+- **改提示词**：改 `prompts.py`。桥接注入的人设放入 `workspace/SOUL.md`，主人资料放入 `workspace/OWNER.md`；开发规则留在 Codex 原生加载的 `workspace/AGENTS.md`。文件不自动迁移，均属本地忽略文件。
 - **加配置项**：用 `self.cfg.get('key', 默认值)` 读取，让旧配置文件也能工作；同时更新 `config.example.json` 和 README 的配置表。
 - **加一种消息类型**：在 `incoming_text()` 中解析，在 `Incoming` 中加字段，在 `worker()` 中处理。
 

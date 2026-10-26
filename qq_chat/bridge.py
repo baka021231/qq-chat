@@ -269,11 +269,14 @@ class Bridge:
         return paths
 
     async def instructions(self, authorized, *, group_moderation=True):
-        rules = None
-        rules_path = BASE / 'workspace' / 'AGENTS.md'
-        if rules_path.is_file():
-            rules = await asyncio.to_thread(rules_path.read_text, encoding='utf-8')
-            logging.info('QQ workspace AGENTS.md loaded for current turn')
+        sections = []
+        for name in ('SOUL.md', 'OWNER.md'):
+            rules_path = BASE / 'workspace' / name
+            if rules_path.is_file():
+                content = await asyncio.to_thread(rules_path.read_text, encoding='utf-8')
+                sections.append(name + '\n' + content)
+                logging.info('QQ workspace %s loaded for current turn', name)
+        rules = '\n\n'.join(sections) if sections else None
         return prompts.instructions(authorized, rules, group_moderation=group_moderation)
 
     async def thread_for(self, source, authorized):
