@@ -13,10 +13,12 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 | `qq_files.py`、`qq_images.py` | 文件和图片接收 |
 | `tests/` | 离线回归测试 |
 | `tools/` | 当前可用的连接检查、重启工具 |
-| `docs/` | 项目文档（Codex 会话说明见 `docs/APPSERVER-MIGRATION.md`） |
+| `docs/FEATURES.md` | 功能说明：能做什么、限制、不支持的功能、已知问题 |
+| `docs/ARCHITECTURE.md` | 架构与开发说明：模块、权限模型、数据库、常见改动、测试写法 |
+| `docs/APPSERVER-MIGRATION.md` | Codex 会话映射与终端接续 |
+| `docs/CHANGELOG.md` | 变更记录 |
 | `setup/` | NapCat 安装脚本 |
 | `config.example.json` | 配置模板 |
-| `CHANGELOG.md` | 变更记录 |
 
 以下内容只在本机，已被 `.gitignore` 排除：
 
@@ -72,7 +74,7 @@ python3 tools/restart_bridge.py
 
 ## 版本管理
 
-代码用 git 管理。修改前确认工作区干净，改完运行测试再提交，并在 `CHANGELOG.md` 记录变更；出问题时用 `git revert` 回滚后重启。不再新建 `archive/backups/` 备份。
+代码用 git 管理。修改前确认工作区干净，改完运行测试再提交；改功能时在同一个提交里更新 `docs/FEATURES.md` 和 `docs/CHANGELOG.md`；出问题时用 `git revert` 回滚后重启。不再新建 `archive/backups/` 备份。
 
 新增测试放入 `tests/`，维护工具放入 `tools/`，避免在根目录堆积临时文件。
 
