@@ -4,6 +4,7 @@ chat.sqlite3
 *.sqlite3
 *.log
 .bridge-restart.lock
+.group-blacklist.lock
 
 # Local history (backups contain config.json and chat databases)
 archive/

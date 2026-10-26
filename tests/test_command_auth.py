@@ -3,6 +3,10 @@ import asyncio
 import contextlib
 import sqlite3
 import unittest
+import json
+from pathlib import Path
+import tempfile
+from unittest.mock import patch
 
 from qq_chat.bridge import Bridge, Incoming, Source
 
@@ -49,7 +53,7 @@ class CommandAuthTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_group_member_cannot_reset_or_read_session_or_use_future_commands(self):
         before = self.snapshot()
-        for command in ('/new', '/session', '/effort max', '/future', '/NEW', '/new extra'):
+        for command in ('/new', '/session', '/block 123', '/unblock 789', '/blacklist', '/effort max', '/future', '/NEW', '/new extra'):
             await self.dispatch(Source('group', 999, 789, '心糖'), command)
             self.assertIn('仅限主号', self.sent[-1])
             self.assertNotIn('id-group', self.sent[-1])
@@ -68,6 +72,23 @@ class CommandAuthTests(unittest.IsolatedAsyncioTestCase):
                                  (Source('group', 999, 123), 'id-group:999:owner')):
             await self.dispatch(source, '/session')
             self.assertIn(expected, self.sent[-1])
+
+    async def test_only_owner_can_manage_persistent_group_blacklist(self):
+        with tempfile.TemporaryDirectory() as directory, patch('qq_chat.bridge.BASE', Path(directory)):
+            config = Path(directory) / 'config.json'
+            config.write_text(json.dumps({'owner_qq': 123, 'allowed_groups': [], 'allow_all_groups': False}))
+            source = Source('private', 123, 123)
+            await self.dispatch(source, '/block 789')
+            self.assertEqual(self.bridge.cfg['group_user_blacklist'], ['789'])
+            await self.dispatch(source, '/blacklist')
+            self.assertIn('789', self.sent[-1])
+            await self.dispatch(source, '/block 123')
+            self.assertIn('不能拉黑主号', self.sent[-1])
+            await self.dispatch(source, '/block nope')
+            self.assertIn('正整数', self.sent[-1])
+            await self.dispatch(source, '/unblock 789')
+            self.assertEqual(self.bridge.cfg['group_user_blacklist'], [])
+            self.assertEqual(json.loads(config.read_text())['group_user_blacklist'], [])
 
     async def test_public_ping_help_do_not_change_state(self):
         before = self.snapshot()

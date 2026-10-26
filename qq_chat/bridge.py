@@ -14,6 +14,7 @@ from .codex_app import AppServer
 from .files import MAX_FILE_BYTES, save_attachment
 from .images import MAX_IMAGE_BYTES, save_image
 from .reply import stream_bubbles
+from .moderation import BLOCK_SENDER, blocked_group_sender, bounded_guest_reply, obvious_abuse, update_blacklist
 
 from websockets.asyncio.client import connect
 
@@ -64,7 +65,8 @@ def speaker_message(source, text, owner):
     return f'[发言人：{name} | QQ：{source.sender_id} | 身份：{role} | 场景：{scene}]\n{text}'
 
 
-def incoming_text(event, owner, allowed_groups=(), allow_all_groups=False, require_trigger=True):
+def incoming_text(event, owner, allowed_groups=(), allow_all_groups=False, require_trigger=True,
+                  group_user_blacklist=()):
     if event.get("post_type") != "message":
         return None
     user = str(event.get("user_id", ""))
@@ -83,6 +85,8 @@ def incoming_text(event, owner, allowed_groups=(), allow_all_groups=False, requi
         if not group.isdigit() or (not allow_all_groups and group not in {str(g) for g in allowed_groups}):
             return None
         source = Source("group", int(group), int(user), name)
+        if blocked_group_sender(source, {'owner_qq': owner, 'group_user_blacklist': group_user_blacklist}):
+            return None
     else:
         return None
     message = event.get("message", [])
@@ -104,6 +108,26 @@ def incoming_text(event, owner, allowed_groups=(), allow_all_groups=False, requi
 
 
 class Bridge:
+    def blocked(self, source):
+        return blocked_group_sender(source, self.cfg)
+
+    def block_user(self, user, *, blocked=True):
+        users = update_blacklist(BASE / 'config.json', user, self.cfg['owner_qq'], blocked=blocked)
+        self.cfg['group_user_blacklist'] = users
+
+    def auto_block(self, source):
+        """Only the event's real sender can be auto-blocked; owners are exempt."""
+        if source.kind != 'group' or owner_request(source, self.cfg['owner_qq']):
+            return
+        try:
+            self.block_user(source.sender_id)
+        except (OSError, ValueError, TypeError):
+            # Stay silent even if persistence fails; still block until the next restart.
+            users = {str(user) for user in self.cfg.get('group_user_blacklist', [])}
+            users.add(str(source.sender_id))
+            self.cfg['group_user_blacklist'] = sorted(users)
+            logging.error('Group blacklist persistence failed; sender blocked in memory')
+
     def conversation(self, source):
         return conversation_key(source, self.cfg['owner_qq'])
 
@@ -157,6 +181,8 @@ class Bridge:
     async def send(self, source, text):
         # One limiter for progress, answers and commands, including long chunks.
         async with self.send_lock:
+            if self.blocked(source):
+                return
             await self._send(source, text)
 
     async def _send(self, source, text):
@@ -353,6 +379,11 @@ class Bridge:
             incoming = await self.queue.get()
             source, text = incoming.source, incoming.text
             try:
+                if self.blocked(source):
+                    continue
+                if source.kind == 'group' and not owner_request(source, self.cfg['owner_qq']) and obvious_abuse(text):
+                    self.auto_block(source)
+                    continue
                 # Management commands bypass the model, so authorize them here.
                 # Deny unknown slash commands too, to keep future additions closed by default.
                 if (text.startswith('/') and text.split(maxsplit=1)[0].casefold() not in ('/ping', '/help')
@@ -386,13 +417,32 @@ class Bridge:
                 elif text == "/session":
                     row = self.db.execute("SELECT thread_id FROM threads WHERE conversation=?", (self.conversation(source),)).fetchone()
                     await self.send(source, "当前会话：" + (row[0] if row else "尚未创建；发送一条消息即可创建。"))
+                elif text == '/blacklist':
+                    users = self.cfg.get('group_user_blacklist', [])
+                    await self.send(source, '群聊用户黑名单：' + ('、'.join(map(str, users)) if users else '空'))
+                elif text.split(maxsplit=1)[:1] in (['/block'], ['/unblock']):
+                    parts = text.split()
+                    if len(parts) != 2:
+                        await self.send(source, '用法：/block QQ号 或 /unblock QQ号')
+                        continue
+                    try:
+                        self.block_user(parts[1], blocked=parts[0] == '/block')
+                    except ValueError as error:
+                        await self.send(source, str(error))
+                        continue
+                    await self.send(source, '已加入群聊用户黑名单。' if parts[0] == '/block' else '已解除群聊用户拉黑。')
                 elif text == "/help":
-                    await self.send(source, "Aemeath：主号在私聊或群聊可请求Linux操作，其他人仅文字聊天；Windows文件只读。群聊需@机器人并附文字或图片，或喊Aemeath、爱弥斯、ams、小爱（英文不分大小写）。图片识别仅主号可用，每条最多5张、每张20 MiB，支持PNG、JPEG、WebP、GIF。文件附件仅主号私聊接收。/ping、/help 所有人可用；/new 创建新会话、/session 查看会话ID仅限主号。")
+                    await self.send(source, "Aemeath：主号在私聊或群聊可请求Linux操作，其他人仅文字聊天；Windows文件只读。群聊需@机器人并附文字或图片，或喊Aemeath、爱弥斯、ams、小爱（英文不分大小写）。图片识别仅主号可用，每条最多5张、每张20 MiB，支持PNG、JPEG、WebP、GIF。文件附件仅主号私聊接收。/ping、/help 所有人可用；/new 创建新会话、/session 查看会话ID、/blacklist 查看群聊用户黑名单、/block QQ号 拉黑、/unblock QQ号 解除拉黑仅限主号。黑名单用户的群消息静默忽略。")
                 elif len(text) > 6000:
                     await self.send(source, "这条消息较长，请拆成每条不超过6000字。")
                 else:
                     text = speaker_message(source, text, self.cfg['owner_qq'])
                     reply, streamed = await self.chat(source, text, incoming.context_id, image_paths=image_paths)
+                    if source.kind == 'group' and not owner_request(source, self.cfg['owner_qq']):
+                        if reply.strip() == BLOCK_SENDER:
+                            self.auto_block(source)
+                            continue
+                        reply = bounded_guest_reply(reply)
                     if not streamed:
                         await self.send(source, reply)
                     self.db.executemany(
@@ -419,7 +469,8 @@ class Bridge:
                         future.set_result(event)
                     continue
                 incoming = incoming_text(event, self.cfg["owner_qq"], self.cfg.get("allowed_groups", []),
-                                         allow_all_groups=self.cfg.get('allow_all_groups', True), require_trigger=False)
+                                         allow_all_groups=self.cfg.get('allow_all_groups', True), require_trigger=False,
+                                         group_user_blacklist=self.cfg.get('group_user_blacklist', []))
                 if incoming is None:
                     continue
                 message_id = event.get("message_id")
@@ -432,9 +483,14 @@ class Bridge:
                 self.db.execute("DELETE FROM seen WHERE time < ?", (time.time() - 7 * 86400,))
                 self.db.commit()
                 if incoming.source.kind == 'group':
+                    triggered = incoming_text(event, self.cfg['owner_qq'], self.cfg.get('allowed_groups', []),
+                                              allow_all_groups=self.cfg.get('allow_all_groups', True),
+                                              group_user_blacklist=self.cfg.get('group_user_blacklist', []))
+                    if triggered and not owner_request(incoming.source, self.cfg['owner_qq']) and obvious_abuse(incoming.text):
+                        self.auto_block(incoming.source)
+                        continue
                     context_id = self.remember_group(incoming.source, incoming.text)
-                    if incoming_text(event, self.cfg['owner_qq'], self.cfg.get('allowed_groups', []),
-                                     allow_all_groups=self.cfg.get('allow_all_groups', True)) is None:
+                    if triggered is None:
                         continue
                     incoming = Incoming(incoming.source, incoming.text, incoming.attachments, context_id, incoming.images)
                 try:

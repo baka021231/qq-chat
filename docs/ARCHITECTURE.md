@@ -38,8 +38,9 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔 1.5 秒，每�
 | `reply.py` | `BubbleStream`：把流式回复切成 QQ 气泡 | 无 |
 | `files.py` | 安全保存附件（不跟随符号链接、限制大小、不覆盖） | 无 |
 | `images.py` | 获取并校验图片（域名白名单、文件头识别格式） | `files` |
+| `moderation.py` | 群聊用户黑名单、明确滥用检测、群友输出限制、加锁原子保存配置 | 无 |
 
-依赖只从 `bridge.py` 指向其他模块。新功能如果不需要访问 `Bridge` 的状态，优先在包里写成独立模块；从 `bridge.py` 拆出功能时也放在包里。运行时文件（`config.json`、`chat.sqlite3`、`workspace/`）在项目根目录，由 `bridge.BASE` 指向。
+`bridge.py` 编排其他模块，`prompts.py` 从 `moderation.py` 引入内部拉黑标记。新功能如果不需要访问 `Bridge` 的状态，优先在包里写成独立模块；从 `bridge.py` 拆出功能时也放在包里。运行时文件（`config.json`、`chat.sqlite3`、`workspace/`）在项目根目录，由 `bridge.BASE` 指向。
 
 ## `bridge.py` 的结构
 
@@ -62,6 +63,14 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔 1.5 秒，每�
 主号在群里时，会话键加上 `:owner` 后缀，与群友的线程分开，避免群友的历史消息进入有操作权限的线程。
 
 修改权限相关代码时，必须同时更新 `tests/test_command_auth.py` 和 `tests/test_message_policy.py` 中的对应测试。
+
+## 群聊用户动态拉黑
+
+`moderation.blocked_group_sender()` 在接收、worker 和发送端检查 `group_user_blacklist`；主号按真实 QQ 号豁免。仅触发机器人的群友消息才交给 `obvious_abuse()` 预检，命中后直接由 `Bridge.auto_block()` 保存并丢弃，不调用模型、不进入群聊参考记录。后续 worker 再检查一次，防止之前排队的消息继续回复。
+
+模型侧只收到一个固定的当前发言人拉黑标记协议；它返回该标记时，worker 从 `Source.sender_id` 获取拉黑对象，不解析模型或用户提供的 QQ 号，不发送标记。主号命令可显式添加和解除名单；群友不能使用这些命令，模型也没有获得配置写权限。
+
+`moderation.update_blacklist()` 使用 `.group-blacklist.lock` 文件锁，重新读取配置、合并单个设置，再以 600 权限写临时文件并原子替换。不要提交配置或锁文件。配置错误/磁盘故障时，自动路径先在内存拉黑并记日志，保持静默；重启后若未落盘则不保留，应检查日志。
 
 ## 一轮对话的组装
 

@@ -43,6 +43,7 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 | `allow_all_groups` | `true` 时响应机器人加入的所有群，此时忽略 `allowed_groups`；省略时也按 `true` 处理 |
 | `allowed_groups` | `allow_all_groups` 为 `false` 时才生效的群号白名单 |
 | `mention_qq` | 群聊回复这些 QQ 号的消息时自动 @ 对方 |
+| `group_user_blacklist` | 群聊用户 QQ 号列表，默认空；跨群静默忽略，动态拉黑会保存，主号豁免。主号用 `/blacklist` 查看、`/block QQ号` 添加、`/unblock QQ号` 解除 |
 | `show_tool_progress` | 进度中是否推送工具调用摘要，默认 `false` |
 
 不论哪种群设置，群聊都需要 @ 机器人或喊触发词才会回复。

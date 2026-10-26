@@ -5,6 +5,7 @@
   "owner_qq": "<主号 QQ>",
   "allow_all_groups": true,
   "allowed_groups": [],
+  "group_user_blacklist": [],
   "mention_qq": [],
   "show_tool_progress": false
 }

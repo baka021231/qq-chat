@@ -204,6 +204,8 @@ class MessagePolicyTests(unittest.TestCase):
                                  {'group:999:owner': 'thread-1', 'group:999': 'thread-2'})
                 self.assertIn('Windows挂载盘只允许读取', calls[0][1]['developerInstructions'])
                 self.assertIn('不调用工具', calls[1][1]['developerInstructions'])
+                self.assertIn('[[BLOCK_CURRENT_GROUP_SENDER]]', calls[1][1]['developerInstructions'])
+                self.assertNotIn('[[BLOCK_CURRENT_GROUP_SENDER]]', calls[0][1]['developerInstructions'])
                 bridge.remember_group(Source('group', 999, 789, '群友'), '请接着聊一致性')
                 context_id = bridge.remember_group(Source('group', 999, 123), '小爱继续')
                 await bridge.chat(Source('group', 999, 123), '当前主号消息', context_id)
