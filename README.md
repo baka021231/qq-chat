@@ -14,7 +14,6 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 | `qq_chat/files.py`、`qq_chat/images.py` | 文件和图片接收 |
 | `tests/` | 离线回归测试 |
 | `tools/` | 当前可用的连接检查、重启工具 |
-| `tools/qq_admin.py` | 主人常用操作：群及私聊白名单增删查，返回 JSON |
 | `docs/FEATURES.md` | 功能说明：能做什么、限制、不支持的功能、已知问题 |
 | `docs/BACKLOG.md` | 需求待办：目标、验收标准和待定事项 |
 | `docs/ROADMAP.md` | 远景小地图：语音、前后台协作与希望实现的体验 |
