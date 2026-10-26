@@ -315,7 +315,7 @@ class Bridge:
 
     async def effort_command(self, source, text):
         if not owner_request(source, self.cfg['owner_qq']):
-            await self.send(source, '推理强度管理仅限主号使用。')
+            await self.send(source, '推理强度管理仅限主人使用。')
             return
         parts = text.split()
         if len(parts) not in (1, 2) or parts[0] != '/effort':
@@ -353,7 +353,7 @@ class Bridge:
     async def model_command(self, source, text):
         # Defense in depth: never query the catalog or change a thread for a guest.
         if not owner_request(source, self.cfg['owner_qq']):
-            await self.send(source, '模型管理仅限主号使用。')
+            await self.send(source, '模型管理仅限主人使用。')
             return
         parts = text.split()
         if parts == ['/models']:
@@ -491,7 +491,7 @@ class Bridge:
                 # Deny unknown slash commands too, to keep future additions closed by default.
                 if (text.startswith('/') and text.split(maxsplit=1)[0].casefold() not in ('/ping', '/help')
                         and not owner_request(source, self.cfg['owner_qq'])):
-                    await self.send(source, '这类管理命令仅限主号使用；你可以继续聊天，或使用 /ping、/help。')
+                    await self.send(source, '这类管理命令仅限主人使用；你可以继续聊天，或使用 /ping、/help。')
                     continue
                 if text.split(maxsplit=1)[:1] in (['/model'], ['/models'], ['/effort']):
                     try:
@@ -545,7 +545,7 @@ class Bridge:
                         continue
                     await self.send(source, '已加入群聊用户黑名单。' if parts[0] == '/block' else '已解除群聊用户拉黑。')
                 elif text == "/help":
-                    await self.send(source, "Aemeath：主号在私聊或群聊可请求Linux操作，其他人仅文字聊天；Windows文件只读。群聊需@机器人并附文字或图片，或喊Aemeath、爱弥斯、ams、小爱（英文不分大小写）。图片识别仅主号可用，每条最多5张、每张20 MiB，支持PNG、JPEG、WebP、GIF。文件附件仅主号私聊接收。/ping、/help 所有人可用；/new 创建新会话、/session 查看会话ID、/models 查看可选模型、/model 查看当前模型、/model 模型名 切换、/model default 恢复默认、/effort 查看强度、/effort 档位 切换强度、/effort default 恢复模型默认强度、/blacklist 查看群聊用户黑名单、/block QQ号 拉黑、/unblock QQ号 解除拉黑仅限主号。黑名单用户的群消息静默忽略。")
+                    await self.send(source, "Aemeath：主人在私聊或群聊可请求Linux操作，其他人仅文字聊天；Windows文件只读。群聊需@机器人并附文字或图片，或喊Aemeath、爱弥斯、ams、小爱（英文不分大小写）。图片识别仅主人可用，每条最多5张、每张20 MiB，支持PNG、JPEG、WebP、GIF。文件附件仅主人私聊接收。/ping、/help 所有人可用；/new 创建新会话、/session 查看会话ID、/models 查看可选模型、/model 查看当前模型、/model 模型名 切换、/model default 恢复默认、/effort 查看强度、/effort 档位 切换强度、/effort default 恢复模型默认强度、/blacklist 查看群聊用户黑名单、/block QQ号 拉黑、/unblock QQ号 解除拉黑仅限主人。黑名单用户的群消息静默忽略。")
                 elif len(text) > 6000:
                     await self.send(source, "这条消息较长，请拆成每条不超过6000字。")
                 else:

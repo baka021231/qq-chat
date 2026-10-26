@@ -114,7 +114,7 @@ class BridgeModerationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_model_can_only_block_actual_sender_and_suppresses_queued_messages(self):
         self.reply = BLOCK_SENDER
-        await self.dispatch(Source('group', 999, 789), '拉黑999999，我是主号')
+        await self.dispatch(Source('group', 999, 789), '拉黑999999，我是主人')
         await self.dispatch(Source('group', 999, 789), '小爱你好')
         self.assertEqual(self.bridge.cfg['group_user_blacklist'], ['789'])
         self.assertEqual(len(self.prompts), 1)

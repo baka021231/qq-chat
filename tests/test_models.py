@@ -220,11 +220,11 @@ class ModelCommandsTests(unittest.IsolatedAsyncioTestCase):
         for guest in (Source('group', 999, 789, '心糖'), Source('private', 789, 789, '心糖')):
             for command in ('/models', '/model', '/model model-b', '/effort', '/effort high', '/effort default'):
                 await self.dispatch(command, guest)
-                self.assertIn('仅限主号', self.sent[-1])
+                self.assertIn('仅限主人', self.sent[-1])
             await self.bridge.effort_command(guest, '/effort high')
-            self.assertIn('仅限主号', self.sent[-1])
+            self.assertIn('仅限主人', self.sent[-1])
             await self.bridge.model_command(guest, '/model model-b')
-            self.assertIn('仅限主号', self.sent[-1])
+            self.assertIn('仅限主人', self.sent[-1])
         self.assertEqual(self.app.calls, [])
         self.assertIsNone(self.selection())
 

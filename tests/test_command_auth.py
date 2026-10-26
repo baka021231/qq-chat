@@ -56,7 +56,7 @@ class CommandAuthTests(unittest.IsolatedAsyncioTestCase):
         before = self.snapshot()
         for command in ('/new', '/session', '/model', '/models', '/model test-model', '/block 123', '/unblock 789', '/blacklist', '/effort max', '/future', '/NEW', '/new extra'):
             await self.dispatch(Source('group', 999, 789, '心糖'), command)
-            self.assertIn('仅限主号', self.sent[-1])
+            self.assertIn('仅限主人', self.sent[-1])
             self.assertNotIn('id-group', self.sent[-1])
             self.assertEqual(self.snapshot(), before)
 
@@ -73,7 +73,7 @@ class CommandAuthTests(unittest.IsolatedAsyncioTestCase):
         before = self.snapshot()
         for command in ('/new', '/session', '/model', '/models', '/model test-model', '/block 123', '/unblock 789', '/blacklist'):
             await self.dispatch(Source('private', 789, 789), command)
-            self.assertIn('仅限主号', self.sent[-1])
+            self.assertIn('仅限主人', self.sent[-1])
             self.assertEqual(self.snapshot(), before)
 
     async def test_owner_can_read_private_and_group_session(self):
@@ -92,7 +92,7 @@ class CommandAuthTests(unittest.IsolatedAsyncioTestCase):
             await self.dispatch(source, '/blacklist')
             self.assertIn('789', self.sent[-1])
             await self.dispatch(source, '/block 123')
-            self.assertIn('不能拉黑主号', self.sent[-1])
+            self.assertIn('不能拉黑主人', self.sent[-1])
             await self.dispatch(source, '/block nope')
             self.assertIn('正整数', self.sent[-1])
             await self.dispatch(source, '/unblock 789')

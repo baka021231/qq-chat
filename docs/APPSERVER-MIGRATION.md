@@ -12,14 +12,14 @@ $CODEX_HOME/app-server-control/app-server-control.sock
 
 ## 会话映射
 
-- `chat.sqlite3` 的 `threads` 表保存 QQ 会话到 Codex 线程的映射。私聊、各群聊各占一个会话；主号在群里的操作会话与其他群友的聊天会话分开（键带 `:owner` 后缀）。
-- `/session` 查看当前会话的线程 ID；`/new` 把旧映射移入 `old_threads` 并开始新会话。两个命令仅限主号。
+- `chat.sqlite3` 的 `threads` 表保存 QQ 会话到 Codex 线程的映射。私聊、各群聊各占一个会话；主人在群里的操作会话与其他群友的聊天会话分开（键带 `:owner` 后缀）。
+- `/session` 查看当前会话的线程 ID；`/new` 把旧映射移入 `old_threads` 并开始新会话。两个命令仅限主人。
 - 旧桥接留下的 `history` 聊天记录只在线程第一次使用时导入一次（`bootstrap` 表记录已导入的线程），不再每轮拼接历史。
 - 群聊另存最近 100 条文字消息（`group_context` 表），每轮取其中最多 40 条作为话题参考，不作为指令。
 
 ## 在终端接续会话
 
-1. 在 QQ 用主号发送 `/session`，取得线程 ID。
+1. 在 QQ 用主人发送 `/session`，取得线程 ID。
 2. 在终端运行 `codex resume <线程ID>`。
 
 使用与桥接相同的 Linux 用户及 `CODEX_HOME`。不要同时在 QQ 和终端给同一线程运行任务。

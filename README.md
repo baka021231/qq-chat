@@ -39,12 +39,12 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 | --- | --- |
 | `ws_url`、`onebot_token` | NapCat OneBot WebSocket 地址和 token |
 | `codex_path` | `codex` 可执行文件路径 |
-| `owner_qq` | 主号 QQ，只有它可以授权操作 |
-| `private_whitelist` | 允许文字私聊的其他 QQ 号，默认空；不授予工具、文件、图片或管理命令权限，主号始终允许 |
+| `owner_qq` | 主人 QQ，只有它可以授权操作 |
+| `private_whitelist` | 允许文字私聊的其他 QQ 号，默认空；不授予工具、文件、图片或管理命令权限，主人始终允许 |
 | `allow_all_groups` | `true` 时响应机器人加入的所有群，此时忽略 `allowed_groups`；省略时也按 `true` 处理 |
 | `allowed_groups` | `allow_all_groups` 为 `false` 时才生效的群号白名单 |
 | `mention_qq` | 群聊回复这些 QQ 号的消息时自动 @ 对方 |
-| `group_user_blacklist` | 群聊用户 QQ 号列表，默认空；跨群静默忽略，动态拉黑会保存，主号豁免。主号用 `/blacklist` 查看、`/block QQ号` 添加、`/unblock QQ号` 解除 |
+| `group_user_blacklist` | 群聊用户 QQ 号列表，默认空；跨群静默忽略，动态拉黑会保存，主人豁免。主人用 `/blacklist` 查看、`/block QQ号` 添加、`/unblock QQ号` 解除 |
 | `show_tool_progress` | 进度中是否推送工具调用摘要，默认 `false` |
 
 不论哪种群设置，群聊都需要 @ 机器人或喊触发词才会回复。
@@ -82,14 +82,14 @@ python3 -m qq_chat
 python3 tools/restart_bridge.py
 ```
 
-## 模型选择（仅主号）
+## 模型选择（仅主人）
 
 - `/models`：读取当前账号的可选模型，包含必要的图片能力提示。
 - `/model`：查询当前会话模型设置；未设置时查询接口的当前型号。
 - `/model 模型名`：校验可选列表并保存当前会话选择，下一条消息生效，保留聊天记录。
 - `/model default`：解析并切换到 Codex 当前配置的默认模型。
 
-模型选择保存在 `chat.sqlite3` 的 `conversation_models` 表；重启和 `/new` 后保留，只影响当前主号会话。群友和私聊白名单访客不能查询或切换模型。切换时采用该模型目录中给出的默认推理强度，不修改全局 Codex 配置。若默认模型不在可选目录中，命令会拒绝切换。
+模型选择保存在 `chat.sqlite3` 的 `conversation_models` 表；重启和 `/new` 后保留，只影响当前主人会话。群友和私聊白名单访客不能查询或切换模型。切换时采用该模型目录中给出的默认推理强度，不修改全局 Codex 配置。若默认模型不在可选目录中，命令会拒绝切换。
 
 ## 版本管理
 
@@ -101,10 +101,10 @@ python3 tools/restart_bridge.py
 
 本机的 `archive/` 保留引入 git 前的旧文件；其中脚本的相对路径和报告中的绝对路径反映整理前的布局，不作为当前维护入口。不要直接运行旧激活脚本，以免恢复过时版本。移动清单在 `archive/organization-manifest.json`。
 
-### 会话推理强度（仅主号）
+### 会话推理强度（仅主人）
 
-`/effort` 查询当前模型、强度和支持档位；`/effort 档位` 设置；`/effort default` 恢复当前模型目录默认强度。按实时模型目录校验，不支持的档位或查询失败不更改原设置。沿用 `conversation_models` 保存，下一条消息生效，重启和 `/new` 保留，只影响当前主号会话。未选择模型时首次设置会固定当前会话模型；再次 `/model` 切换会重置为所选模型默认强度。
+`/effort` 查询当前模型、强度和支持档位；`/effort 档位` 设置；`/effort default` 恢复当前模型目录默认强度。按实时模型目录校验，不支持的档位或查询失败不更改原设置。沿用 `conversation_models` 保存，下一条消息生效，重启和 `/new` 保留，只影响当前主人会话。未选择模型时首次设置会固定当前会话模型；再次 `/model` 切换会重置为所选模型默认强度。
 
 ## 工作台设定加载
 
-桥接每轮按顺序读取 `workspace/SOUL.md`、`workspace/OWNER.md`，将存在的文件注入 developerInstructions；缺失文件跳过，不回退读取 AGENTS.md，也不自动创建或迁移文件。SOUL.md 对所有会话注入；OWNER.md 仅对桥接核验的主号私聊和群内主号会话注入，访客不会读取该文件。`workspace/AGENTS.md` 仅由 Codex 按工作目录原生加载，桥接不再手动注入。
+桥接每轮按顺序读取 `workspace/SOUL.md`、`workspace/OWNER.md`，将存在的文件注入 developerInstructions；缺失文件跳过，不回退读取 AGENTS.md，也不自动创建或迁移文件。SOUL.md 对所有会话注入；OWNER.md 仅对桥接核验的主人私聊和群内主人会话注入，访客不会读取该文件。`workspace/AGENTS.md` 仅由 Codex 按工作目录原生加载，桥接不再手动注入。

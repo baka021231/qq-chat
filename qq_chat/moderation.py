@@ -61,7 +61,7 @@ def update_blacklist(path, user, owner, *, blocked=True):
         fcntl.flock(lock, fcntl.LOCK_EX)
         cfg = json.loads(path.read_text())
         if blocked and user in (str(owner), str(cfg['owner_qq'])):
-            raise ValueError('不能拉黑主号')
+            raise ValueError('不能拉黑主人')
         users = {str(int(item)) for item in cfg.get('group_user_blacklist', [])}
         if blocked:
             users.add(user)
