@@ -24,7 +24,7 @@ def main():
     parser.add_argument('--provider', choices=('auto', 'cpu', 'cuda'), default='auto')
     parser.add_argument('--text-split-method', choices=('cut3', 'cut5'), default='cut3')
     parser.add_argument('--fragment-interval', type=float, default=0.35)
-    parser.add_argument('--fade-ms', type=int, choices=range(10, 21), default=15)
+    parser.add_argument('--fade-ms', type=int, choices=(0, *range(10, 21)), default=15)
     args = parser.parse_args()
     if not .3 <= args.fragment_interval <= .5:
         parser.error('--fragment-interval must be 0.3-0.5 seconds')
@@ -38,7 +38,8 @@ def main():
         def loader(path, provider):
             if hasattr(module.ort, 'preload_dlls') and provider == 'cuda':
                 module.ort.preload_dlls(directory='')
-            return segment_fades(module.AimisiOnnx(path, module.select_providers(provider)), args.fade_ms)
+            loaded = module.AimisiOnnx(path, module.select_providers(provider))
+            return segment_fades(loaded, args.fade_ms) if args.fade_ms else loaded
         engine = RecoveringEngine(loader, package, cpu_package, args.provider)
         import soundfile
     load_seconds = time.perf_counter() - started

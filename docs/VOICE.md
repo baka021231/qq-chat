@@ -12,6 +12,24 @@ GPU 环境依赖记录于 `requirements-voice-gpu.lock`。`genie-tts` 会依赖 
 
 回退配置：从样本目录的 `voice-config-before.json` 仅恢复 `voice` 字段，保留其他配置；代码按各步骤 Git 提交单独 `git revert`。配置变更在回复结束后重启加载。没有重新开启日常语音。
 
+切分优化使用 cut3、0.35 秒静音及每个内部片段的 15 毫秒淡入淡出，不对静音做交叉淡化。文本清洗在桥接层确定性处理波浪号、颜文字、emoji、省略号与中文数字读法，不追加口语稿生成调用。
+
+仅回退切分与淡入淡出时，在后端命令中加 `--text-split-method cut5 --fragment-interval 0.3 --fade-ms 0`；0 表示关闭淡入淡出，启用时仅允许 10–20 毫秒。模型及清洗不用一并回退。
+
+留样工具示例（不发 QQ、拒绝覆盖）：
+
+```sh
+python3 tools/benchmark_voice.py --output-dir workspace/voice-tests/20261027-optimization --name new-comparison
+```
+
+`before.wav` 在修改前使用 CPU 节约包生成；`step2-gpu-full.wav`、`step4-segments.wav`、`step5-cleaning.wav` 分别保留模型、切分和清洗阶段。`after.wav` 单独运行，避免与其他性能测试争用资源；一次并行验证的样本另存为 `after-concurrent-check.*`，不用于最终计时对比。每次均使用相同原文及种子 42；清洗后送入模型的文本按步骤改变，操作系统文件缓存也不同，不能仅凭单次冷启动数值推断普遍性能提升。
+
+`cpu-fallback.wav` 在 `CUDA_VISIBLE_DEVICES=-1` 下真实生成，报告 provider=cpu，回退原因 RuntimeError；冷启动 20.620 秒（该次与 GPU 校验并行，不能用于性能优劣结论）。CPU 完整包的条件测试仅在 GPU 无法使用时才必要；本机 CUDA 完整包已跑通，因此未额外跑 CPU 完整包计时。
+
+参考音频 `reference-original.wav`、原文及状态单独保存；模型包未改写，尚待主人人工确认内容、背景音乐与混响后才将参考文本波浪号替换成感叹号。未获得确认时，after 样本明确只代表已完成的其他优化。
+
+当前执行环境没有本地播放器或 PulseAudio/PortAudio 客户端库，助手也没有音频试听工具。可以发送 A/B 语音并核对 QQ 接口确认，但不能据此声称已完成本地与 QQ 的听感对比，需人工试听。
+
 启用后，正常聊天的最终回复先发文字，再补同内容的语音。进度、命令和错误提示仍只发文字。语音输出是桥接功能，群友没有因此获得调用工具或操作电脑的权限。
 
 ## 安装记录
