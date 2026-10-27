@@ -2,6 +2,15 @@
 
 ## 2026-10-27
 
+### 前后台分离 PR3 手动任务与命令
+
+- 新增 TaskManager、tasks 表和按会话隔离的 /task、/task release、/tasks、/stop；后台独立运行，前台单 worker 保留，停止与查询不排队。
+- 分离模式主人前台改用 NONE 与手动提示；后台 TASK/FULL 使用独立目标和 WORKER。Codex 记录 active turn 并支持 turn/interrupt，interrupted 与 failed 区分；Claude 支持后台及自有子进程中断。
+- 新增会话锁、全局写占用、接纳上限、任务超时和真实结局结算；写能力随任务保存，连接不确定时继续占锁。
+- 按主人调整简化重启善后：queued 直接 interrupted，running/stopping 一律 orphaned 通知；不查旧进程、不发信号、不自动解除。原自动方案移到 FRONT-BACK 第 13 节。
+- 回报先持久化文字，再走共用 deliver、语音与历史；断线补报不再调用模型。/new 保留任务，结果进入新线程；失败降级保留真实状态。
+- 配置示例和使用说明同步；多后台/MCP 工具通道仍未开放。全量 156 项离线测试通过，compileall、git diff --check、示例/运行配置验证及真实数据库副本升级通过；未修改原数据库、未合并或重启。
+
 ### 前后台分离 PR2 Claude 单 agent 接入
 
 - 新增 Claude JSONL 适配器、profile 配置验证和状态存储，支持主人/访客分别选择 Codex 或 Claude，仍不启动后台任务；旧配置保持单 Codex。

@@ -13,6 +13,31 @@ from qq_chat.bridge import Bridge, Source, incoming_text, speaker_message, owner
 
 
 class MessagePolicyTests(unittest.TestCase):
+    def test_split_front_is_none_but_owner_identity_and_private_rules_are_preserved(self):
+        async def check():
+            with tempfile.TemporaryDirectory() as directory, patch('qq_chat.bridge.BASE', Path(directory)):
+                root = Path(directory); (root / 'workspace').mkdir()
+                (root / 'workspace/OWNER.md').write_text('owner-only setting')
+                cfg = {'owner_qq': 123, 'agents': {'front': 'codex', 'guest': 'codex', 'back': ['codex'],
+                       'profiles': {'codex': {'type': 'codex_app', 'path': 'unused', 'writes': True}}}}
+                bridge = Bridge(cfg)
+                try:
+                    owner = Source('group', 999, 123)
+                    guest = Source('group', 999, 789, '主人')
+                    a = await bridge.turn_request(owner, True)
+                    b = await bridge.turn_request(guest, False)
+                    self.assertEqual(a.level, 'none')
+                    self.assertEqual(b.level, 'none')
+                    self.assertIn('owner-only setting', a.instructions)
+                    self.assertNotIn('owner-only setting', b.instructions)
+                    self.assertIn('请主人用 /task 目标', a.instructions)
+                    self.assertNotIn('请主人用 /task 目标', b.instructions)
+                    self.assertNotIn('dispatch_task', a.instructions)
+                    self.assertNotEqual(a.key, b.key)
+                finally:
+                    bridge.db.close()
+        asyncio.run(check())
+
     def test_private_whitelist_is_chat_only_and_does_not_change_owner(self):
         event = {'post_type': 'message', 'message_type': 'private', 'self_id': 456,
                  'user_id': 789, 'sender': {'nickname': '心糖'},

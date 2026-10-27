@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from qq_chat.agents import Agent, CHAT, FULL, NONE, TurnRequest, build_agents
-from qq_chat.agents.base import MAX_REPLY
+from qq_chat.agents.base import MAX_REPLY, Interrupted
 from qq_chat.agents.codex import CodexAgent
 from qq_chat.bridge import Bridge, Incoming, Source
 from qq_chat.codex_app import AppServer
@@ -204,7 +204,7 @@ class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.db.rollback()
         self.assertEqual(agent.session_id('one'), 't1')
 
-    async def test_transport_retains_noncompleted_error_semantics(self):
+    async def test_transport_distinguishes_interrupted_from_failed(self):
         for status in ('interrupted', 'failed'):
             app = AppServer('unused')
 
@@ -218,8 +218,50 @@ class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
 
             app.call = call
             agent = CodexAgent(self.db, '/unused', 'unused', app=app)
-            with self.assertRaisesRegex(RuntimeError, 'Codex turn failed'):
+            expected = Interrupted if status == 'interrupted' else RuntimeError
+            with self.assertRaises(expected):
                 await agent.run(TurnRequest('key', 'text', CHAT, FULL, '', session_id='thread'))
+
+    async def test_task_thread_is_persistent_and_does_not_replace_chat_session(self):
+        calls = []
+        class Transport:
+            async def start(self): pass
+            async def call(self, method, params):
+                calls.append((method, params))
+                return {'thread': {'id': 'task-thread'}, 'model': 'actual', 'reasoningEffort': 'medium'}
+        self.db.execute('INSERT INTO threads VALUES (?,?)', ('private:10001', 'chat-thread'))
+        agent = CodexAgent(self.db, '/unused', 'unused', app=Transport())
+        from qq_chat.agents.base import TASK
+        thread = await agent.prepare(TurnRequest('task:1', 'goal', TASK, FULL, 'worker rules'))
+        self.assertEqual(thread, 'task-thread')
+        self.assertEqual(agent.session_id('task:1'), 'task-thread')
+        self.assertEqual(agent.session_id('private:10001'), 'chat-thread')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM threads').fetchone()[0], 1)
+        self.assertFalse(calls[-1][1]['ephemeral'])
+
+    async def test_interrupt_uses_only_active_thread_and_turn(self):
+        app = AppServer('unused'); calls = []
+        async def call(method, params):
+            calls.append((method, params))
+            return {}
+        app.call = call
+        self.assertFalse(await app.interrupt('inactive'))
+        app.active_turns['thread'] = 'turn'
+        self.assertTrue(await app.interrupt('thread'))
+        self.assertEqual(calls, [('turn/interrupt', {'threadId': 'thread', 'turnId': 'turn'})])
+
+    async def test_disconnect_is_uncertain_instead_of_releasing_remote_writer(self):
+        from qq_chat.agents.base import ExecutionUncertain
+        app = AppServer('unused')
+        async def call(method, params):
+            if method == 'turn/start':
+                app.events['thread'].put_nowait({'method': 'disconnected'})
+                return {'turn': {'id': 'turn'}}
+            return {}
+        app.call = call
+        with self.assertRaises(ExecutionUncertain):
+            await app.turn('thread', 'goal')
+        self.assertEqual(app.active_turns, {})
 
     def test_default_factory_and_future_configuration_fail_closed(self):
         agents = build_agents({'codex_path': 'unused'}, self.db, '/unused')

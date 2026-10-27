@@ -8,6 +8,7 @@
 
 ```
 NapCat ──WebSocket──▶ Bridge.session()  事件分发、过滤、去重、记录群聊
+                         ├ /stop、/tasks → 控制协程（不排队）
                          │ queue（容量 8）
                          ▼
                       Bridge.worker()    命令、附件、图片、长度检查（单个 worker，逐条处理）
@@ -17,6 +18,7 @@ NapCat ──WebSocket──▶ Bridge.session()  事件分发、过滤、去重
                          ├ instructions()  prompts.py + workspace/SOUL.md + workspace/OWNER.md
                          ├ agent.prepare() 恢复或新建会话
                          ├ turn_text()     拼接旧历史、群聊上下文
+                         ├ /task → TaskManager → 后台 Agent → report_task()
                          └ run_turn()      agent.run(TurnRequest) → Codex AppServer / Claude JSONL
                                ├ 进度 → relay_progress() ─┐
                                └ 回复 → relay_answer()  ──┤（BubbleStream 切分）
@@ -40,6 +42,8 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔随机 2～3 �
 | `agents/claude.py` | Claude JSONL、NONE/FULL 启动、工具列表检查、回复校验、进程清理 | `agents.base` |
 | `agents/config.py` | profile 引用、权限模式、模型目录及阶段范围校验 | 无 |
 | `agents/state.py` | 模型偏好迁移与隔离、历史导入预算 | 无 |
+| `tasks.py` | TaskManager：持久任务、接纳上限、后台执行、写锁、中断与保守重启善后 | `agents.base`、`prompts` |
+| `task_commands.py` | TaskCommands：会话锁、手动命令、可补发回报与共享 deliver | `tasks`、`agents.base`、`prompts` |
 | `prompts.py` | 发给模型的全部提示词与拼接函数 | 无 |
 | `reply.py` | `BubbleStream`：把流式回复切成 QQ 气泡 | 无 |
 | `files.py` | 安全保存附件（不跟随符号链接、限制大小、不覆盖） | 无 |
@@ -63,7 +67,7 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔随机 2～3 �
 
 所有权限都来自 `owner_request(source, owner)`，它只比较数字 QQ 号。结果决定三件事：
 
-1. 请求的权限级别：主人 `FULL`、访客 `NONE`；`CodexAgent.prepare()` 维持原 sandbox：`danger-full-access` 或 `read-only`
+1. 请求的权限级别：单 agent 主人 `FULL`，分离模式主人和所有访客 `NONE`（PR4 前手动分派）；`CodexAgent.prepare()` 维持原 sandbox：`danger-full-access` 或 `read-only`
 2. 使用哪套指令：`prompts.OWNER` 或 `prompts.GUEST`（`prompts.instructions`）
 3. 能否使用管理命令、发图片和附件（`worker`、`receive_*`、`incoming_text`）
 
@@ -96,6 +100,7 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔随机 2～3 �
 
 | 表 | 用途 |
 | --- | --- |
+| `tasks` | 任务来源、目标、执行与回报状态；writes 在创建时冻结，orphaned 写任务继续占锁 |
 | `seen` | 已处理的消息 ID，保留 7 天 |
 | `threads` | 会话键 → Codex 线程 ID |
 | `conversation_models` | 旧 Codex 偏好的兼容表，迁移后仍同步默认 Codex 的选择 |
@@ -161,3 +166,17 @@ python3 -m unittest discover -s tests -v
 ### 会话推理强度（仅主人）
 
 `/effort` 查询当前模型、强度和支持档位；`/effort 档位` 设置；`/effort default` 恢复当前模型目录默认强度。Codex 按实时目录、Claude 按配置目录校验，不支持的档位或查询失败不更改原设置。按会话和 profile 存入 `profile_models`，旧 Codex 表保留兼容，下一条消息生效，重启和 `/new` 保留，只影响当前主人会话。未选择模型时首次设置会固定当前会话模型；再次 `/model` 切换会重置为所选模型默认强度。
+
+## PR3：后台调度与回报
+
+`Bridge` 继承 `TaskCommands`，构造时创建 `TaskManager`。前台仍由一个 worker 串行消费容量 8 的队列；session 对主人 `/stop`、`/tasks` 直接创建控制协程，非主人静默。后台 runner 属于 TaskManager，不随 QQ session 断开而取消。`back: []` 不创建后台执行。
+
+每个任务以 `task:编号` 为执行键，使用 TASK/FULL、WORKER、自足目标、profile 默认模型，不携带 SOUL/OWNER 或聊天历史。Codex task 用独立持久线程，仅内存映射和 tasks.session_id，不覆盖 threads 中的聊天映射。配置只开放一个后台且并发为 1，多后台放到 PR5。
+
+调度用 Condition 检查 tasks 中 running/stopping/orphaned 的 profile 及持久 writes 占用，再原子标记 running。各 profile 占用和全局写占用同时满足才执行。接纳上限同时计入 queued，容量满立即拒绝。正常完成、已确认失败/中断释放容量；超时先请求中断再等待实际结局，RPC 报错回 running；Codex 连接失去或其他无法确认的执行保守进入 orphaned。
+
+重启恢复仅执行数据库状态转换：queued → interrupted，running/stopping → orphaned，不访问旧线程或进程、不发信号、不轮询。写 orphaned 占用按创建时的 writes 判定，防止改配置绕过锁；只有原会话 `/task release` 在主人确认后可释放。旧 runtime_ref 自动核对方案保留在 FRONT-BACK 第 13 节，不在当前代码中。
+
+会话锁按 conversation key 建立，对同一 asyncio task 可重入；chat、模型/强度命令、/new、回报均持锁，worker 持锁直到交付和历史落库。前台与回报不会并发操作同一线程。控制命令和后台调度不取会话锁。
+
+回报还有独立的 task id 锁，避免完成与重连补报同时重复生成/发送。先在会话锁内用前台 CHAT/NONE 生成非流式文字并持久化 report_text；失败使用真实状态的降级摘要；orphaned 始终由桥接固定警告。再由 deliver 走原发送/语音/历史路径，所有 OneBot 气泡确认成功才记 reported=1；已有文字补发不调用模型。/new 不取消任务，回报时重新取当前线程；系统回报首行先于历史参考，防止被导入包装遮住。部分气泡成功后断线可能补发重复，采用至少一次交付。

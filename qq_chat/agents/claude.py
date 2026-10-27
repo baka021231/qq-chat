@@ -14,7 +14,7 @@ import tempfile
 import time
 import uuid
 
-from .base import Agent, CHAT, FULL, MAX_REPLY, MissingSession, NONE
+from .base import Agent, CHAT, TASK, FULL, MAX_REPLY, MissingSession, NONE, Interrupted, ExecutionUncertain
 
 BASE_ARGS = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json',
              '--verbose', '--include-partial-messages', '--system-prompt-snapshot', 'off',
@@ -68,6 +68,7 @@ class ClaudeCodeAgent(Agent):
         self.profile = dict(profile)
         self.runtime = Path(runtime) / name
         self._fresh, self._state, self._active = set(), {}, {}
+        self._interrupted = set()
         self._locks = defaultdict(asyncio.Lock)
 
     async def start(self):
@@ -87,8 +88,8 @@ class ClaudeCodeAgent(Agent):
         return self._state.get(session_id, (self.profile.get('model'), self.profile.get('effort')))
 
     async def prepare(self, req):
-        if req.role != CHAT or req.level not in (NONE, FULL):
-            raise ValueError('Claude FRONT/TASK modes are not implemented in PR2')
+        if req.role not in (CHAT, TASK) or req.level not in (NONE, FULL) or (req.role == TASK and req.level != FULL):
+            raise ValueError('Unsupported Claude role/level; FRONT requires PR4')
         session = self.session_id(req.key)
         if session is None:
             session = str(uuid.uuid4())
@@ -115,6 +116,19 @@ class ClaudeCodeAgent(Agent):
     async def default_model(self):
         return self.profile['model']
 
+    async def interrupt(self, key):
+        process = self._active.get(key)
+        if process is None or process.returncode is not None:
+            return False
+        # This live object owns the child; restart recovery never sends signals.
+        self._interrupted.add(key)
+        try:
+            await terminate(process)
+        except BaseException:
+            self._interrupted.discard(key)
+            raise
+        return True
+
     async def close(self):
         for process in list(self._active.values()):
             await terminate(process)
@@ -125,8 +139,8 @@ class ClaudeCodeAgent(Agent):
 
     async def _run(self, req):
         await self.start()
-        if req.role != CHAT or req.level not in (NONE, FULL):
-            raise ValueError('Claude FRONT/TASK modes are not implemented in PR2')
+        if req.role not in (CHAT, TASK) or req.level not in (NONE, FULL) or (req.role == TASK and req.level != FULL):
+            raise ValueError('Unsupported Claude role/level; FRONT requires PR4')
         if req.key in self._active:
             raise RuntimeError('Claude session already has an active turn')
         session = req.session_id or await self.prepare(req)
@@ -226,13 +240,17 @@ class ClaudeCodeAgent(Agent):
             error_text = stderr + json.dumps(result.get('errors', []) if result else [])
             if not fresh and not initialized and 'No conversation found with session ID' in error_text:
                 raise MissingSession('Claude session is missing')
-            if code or not initialized or not result or result.get('is_error') or result.get('subtype') != 'success':
+            completed_after_stop = (req.key in self._interrupted and result is not None
+                                    and not result.get('is_error') and result.get('subtype') == 'success')
+            if req.key in self._interrupted and not completed_after_stop:
+                raise Interrupted(f'Claude interrupted: subtype={result.get("subtype") if result else None}, exit={code}')
+            if (code and not completed_after_stop) or not initialized or not result or result.get('is_error') or result.get('subtype') != 'success':
                 raise RuntimeError('Claude turn failed; inspect login, model availability and limits')
             # Completed messages are authoritative; streams fill any text-only gaps.
             for ident, text in streams.items():
                 messages.setdefault(ident, text)
             reply = '\n\n'.join(messages.values()).strip() or result.get('result', '').strip()
-            if not reply or CALL_MARKERS.search(reply):
+            if not reply or (req.role == CHAT and CALL_MARKERS.search(reply)):
                 raise RuntimeError('Claude reply is empty or contains simulated invocation markers')
             req.history_text = reply
             logging.info('Claude usage profile=%s usage=%s total_cost_usd=%s',
@@ -242,11 +260,18 @@ class ClaudeCodeAgent(Agent):
                 req.on_answer(reply)
             return reply[:MAX_REPLY]
         finally:
+            uncertain = False
             if process is not None:
-                await terminate(process)
+                try:
+                    await terminate(process)
+                except Exception:
+                    uncertain = True
             if stderr_reader is not None:
                 stderr_reader.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await stderr_reader
             self._active.pop(req.key, None)
+            self._interrupted.discard(req.key)
             Path(prompt).unlink(missing_ok=True)
+            if uncertain:
+                raise ExecutionUncertain('Claude process termination could not be confirmed')

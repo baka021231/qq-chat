@@ -4,15 +4,25 @@
 
 尚未实现的需求、验收标准和待定事项统一记录在 `docs/BACKLOG.md`。
 
-## Agent 与 Claude 单 agent 模式
+## Agent 与前后台模式
 
-PR1/PR2 已提供 Codex 和 Claude Code 适配器；没有 `agents` 配置仍使用原单 Codex。配置 `agents.front` 和 `agents.guest` 可分别选择主人和访客的 profile；本阶段只允许 `back: []`，尚未增加后台任务、MCP 派发或 `/stop`。
+PR1/PR2 已提供 Codex 和 Claude Code 适配器；没有 `agents` 配置仍使用原单 Codex。配置 `agents.front` 和 `agents.guest` 可分别选择主人和访客的 profile；`back: []` 为原单 agent 模式；配置一个后台 profile 后，主人前台用 NONE 聊天，操作由 `/task` 手动交给后台。本阶段不提供 MCP 自动派发或多个后台 profile。
 
 Claude 访客使用 NONE：safe-mode、两个禁用 CLAUDE.md/自动记忆的环境变量及空工具列表校验；主人单 agent 使用 FULL，权限模式必须显式配置，正常加载项目规则。Claude 的回复先完整缓冲，校验工具与调用标记后再分气泡发送，因此不即时发送首字；拒绝的回复不进入历史或语音。Codex 原流式发送保留。
 
 模型及强度按会话和 profile 分开保存，旧 Codex 设置和线程保持可用。新会话首次导入历史对所有 profile 统一采用最近 20 条、序列化后最多 8000 字、每条最多 1000 字的预算；不删除原历史。Claude 会话可续接和归档，已明确缺失的会话只重建一次并重新导入受限历史。适配器返回值仍最多 12000 字；Claude 历史保留校验过的完整顶层回复，不仅保存最后一句。
 
 Claude `/models` 读取 profile 的配置目录，`/model default` 恢复其配置默认模型。可选推理档位仅认模型配置中的 `supportedReasoningEfforts`，未声明时不开放 `/effort` 切换。首次运行前的 Claude 模型状态来自配置别名；收到 init 后显示实际返回的型号。
+
+## 后台任务与停止（PR3）
+
+- 主人可用 `/task 完整目标` 创建任务，后台不读取聊天记录；桥接直接给出任务编号回执。后台运行时前台仍可聊天，前台 worker 本身仍只有一个。
+- `/tasks` 列出当前会话最近十个任务；`/stop` 停当前前台轮次，`/stop 编号` 停某个后台任务，`/stop all` 停本会话后台任务并取消未开始的任务。任务只能在发起会话查看/操作，非主人使用任务命令静默。
+- `/stop`、`/tasks` 不排队，不等会话锁。中断请求送达不等于停止成功；最终以执行端的 interrupted/completed/failed 结果区分停止、完成和失败，30 秒未确认继续保留 stopping 与执行锁。
+- 写任务全局串行，orphaned 的旧写任务仍占锁；只读后台不受写锁影响。本阶段最多一个后台 profile、并发 1，多后台并发留待 PR5。
+- 重启时 queued → interrupted，running/stopping → orphaned，通知主人；不自动查进程、不发信号、不确认旧任务结束。主人自己确认结束后，用 `/task release 编号` 人工释放。
+- 任务结果保存在 `workspace/tasks/编号.md`，回报进入发起会话的历史和原语音流程。QQ 断线不取消后台，发送失败保留回报，重连补发；可能重复部分气泡，不重复生成已有回报。
+- `/new` 不取消后台，结果回到该会话的新一代线程。没有配置后台时 `/task` 明确提示未配置，不改变原单 agent 行为。
 
 ## 角色
 

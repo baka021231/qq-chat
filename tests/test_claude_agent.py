@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from qq_chat.agents.base import CHAT, FULL, MissingSession, NONE, TurnRequest
+from qq_chat.agents.base import CHAT, TASK, FULL, MissingSession, NONE, TurnRequest, Interrupted
 from qq_chat.agents.claude import ClaudeCodeAgent, ISOLATION_ENV, UnexpectedTools, terminate, user_message
 from qq_chat.agents.state import AgentState
 
@@ -134,6 +134,32 @@ class ClaudeAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('--resume', launch.call_args.args)
         self.assertNotIn('--session-id', launch.call_args.args)
         self.assertEqual(captured, {'text': 'updated persona', 'mode': 0o600})
+
+    async def test_task_full_and_interrupt_outcomes(self):
+        for records, code, stopped in ((events(), 0, False), (events(), -2, False), (events()[:-1], -2, True),
+                (events()[:-1] + [{'type': 'result', 'subtype': 'error_during_execution', 'is_error': True}], 0, True)):
+            req = await self.request(FULL); req.role = TASK
+            self.agent._interrupted.add(req.key)
+            if stopped:
+                with self.assertRaises(Interrupted):
+                    await self.run_process(req, Process(records, code))
+            else:
+                reply, call, _ = await self.run_process(req, Process(records, code))
+                self.assertEqual(reply, '完成。')
+                self.assertIn('--append-system-prompt-file', call.args)
+                self.assertNotIn('--safe-mode', call.args)
+            self.assertFalse(self.agent._interrupted)
+
+    async def test_interrupt_targets_only_owned_live_child(self):
+        process = Process([])
+        self.agent._active['task:1'] = process
+        with patch('qq_chat.agents.claude.terminate', AsyncMock()) as cleanup:
+            self.assertFalse(await self.agent.interrupt('other'))
+            self.assertTrue(await self.agent.interrupt('task:1'))
+            cleanup.assert_awaited_once_with(process)
+        self.assertIn('task:1', self.agent._interrupted)
+        process.returncode = 0
+        self.assertFalse(await self.agent.interrupt('task:1'))
 
     async def test_full_keeps_normal_rule_loading(self):
         req = await self.request(FULL)

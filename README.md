@@ -53,7 +53,7 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 | `group_user_blacklist` | 群聊用户 QQ 号列表，默认空；跨群静默忽略，动态拉黑会保存，主人豁免。主人用 `/blacklist` 查看、`/block QQ号` 添加、`/unblock QQ号` 解除 |
 | `show_tool_progress` | 进度中是否推送工具调用摘要，默认 `false` |
 | `voice` | 可选本地语音回复，默认关闭；启用后正常回复先发文字，再补对应语音。配置见 `docs/VOICE.md` |
-| `agents` | 可选单 agent profile 配置；省略保持 Codex，PR2 只允许空 back 列表；Codex profile 省略 path 时继承 codex_path |
+| `agents` | 可选 profile 配置；省略保持 Codex；back 可空或指定一个后台；Codex profile 省略 path 时继承 codex_path |
 
 不论哪种群设置，群聊都需要 @ 机器人或喊触发词才会回复。
 
@@ -89,6 +89,30 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 主人前台为 FULL，必须显式设置权限模式；`dontAsk` 会拒绝需要额外许可的操作，不能保证所有编码工具请求都能执行。访客无论 profile 怎么配置都为 NONE，safe-mode、禁用 CLAUDE.md/自动记忆及空工具校验共同生效，不取得主人的权限。FULL 不启用这些隔离开关，正常读取项目规则。
 
 Claude 回复完整校验后才按气泡发出，因此没有即时首字；Codex 流式保留。`/models` 对 Claude 读取配置目录，model 项也可用对象形式声明 `defaultReasoningEffort` 和 `supportedReasoningEfforts`；未声明档位时 `/effort` 不允许切换，不从 CLI 通用列表推断模型支持情况。新 profile 不继承其他 profile 的模型名。更多边界见 `docs/FRONT-BACK.md` 和 `docs/ARCHITECTURE.md`。
+
+### 手动前后台分离（PR3）
+
+在已有 profiles 中选择一个后台，增加以下配置（示例将 `codex` 作为后台；保留自己的 front/guest 选择）：
+
+```json
+{
+  "agents": {
+    "front": "claude",
+    "guest": "claude-guest",
+    "back": ["codex"],
+    "profiles": {
+      "claude": {"type": "claude_code", "path": "claude", "model": "sonnet", "models": ["sonnet"], "permission_mode": "dontAsk"},
+      "claude-guest": {"type": "claude_code", "path": "claude", "model": "haiku", "models": ["haiku"]},
+      "codex": {"type": "codex_app", "sandbox": "danger-full-access", "writes": true, "max_parallel": 1}
+    }
+  },
+  "tasks": {"max_running": 4, "max_writers": 1, "max_per_conversation": 3, "timeout_minutes": 60, "progress": "direct", "report_chars": 4000}
+}
+```
+
+配置与顶层 codex_path 等原配置合并；没有 agents 或 back 为空时维持单 agent 行为。PR3 只开放一个后台 profile，主人前台只聊天，干活请发 `/task 完整目标`；后台看不到聊天记录，需要把要求写全。用 `/tasks` 查看当前会话任务、`/stop` 停前台、`/stop 编号` 或 `/stop all` 停后台。群任务可设置 tasks.progress=silent。
+
+重启后未开始的任务记为 interrupted，运行过的记为 orphaned 并通知；写 orphaned 持续占锁。自行确认旧执行确实结束后，在原会话用 `/task release 编号` 释放。不自动探测旧进程，不根据重启本身认定已停止。报告位于 workspace/tasks/编号.md，QQ 断线后可补发。
 
 ## 常用操作
 

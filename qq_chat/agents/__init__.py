@@ -1,4 +1,4 @@
-"""Build validated single-agent profiles; no background scheduling in PR2."""
+"""Build validated front, guest and background profiles with shared Codex transport."""
 from pathlib import Path
 
 from .base import Agent, CHAT, FULL, NONE, TurnRequest

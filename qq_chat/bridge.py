@@ -13,7 +13,9 @@ import uuid
 import unicodedata
 from . import prompts
 from .agents import CHAT, FULL, NONE, TurnRequest, build_agents
-from .agents.base import MissingSession
+from .agents.base import MissingSession, Interrupted
+from .tasks import TaskManager
+from .task_commands import TaskCommands, serialized
 from .agents.config import legacy_codex_profile, settings
 from .agents.state import AgentState, recent_history
 from .files import MAX_FILE_BYTES, save_attachment
@@ -113,7 +115,7 @@ def incoming_text(event, owner, allowed_groups=(), allow_all_groups=False, requi
     return Incoming(source, text, attachments, images=images) if text or attachments or images else None
 
 
-class Bridge:
+class Bridge(TaskCommands):
     def blocked(self, source):
         return blocked_group_sender(source, self.cfg)
 
@@ -169,6 +171,8 @@ class Bridge:
                                        {name: profile['type'] for name, profile in profiles.items()})
         self.agents = build_agents(cfg, self.db, BASE / "workspace")
         self._history_replies = {}
+        self.tasks = TaskManager(self, BASE)
+        self._active_front = {}
 
     @property
     def agent(self):
@@ -338,16 +342,20 @@ class Bridge:
     async def turn_request(self, source, authorized, text=''):
         selection = self.selection(source)
         profile = getattr(self.agent_for(source), 'profile', {})
-        return TurnRequest(
+        request = TurnRequest(
             key=self.conversation(source), text=text, role=CHAT,
-            level=FULL if authorized else NONE,
+            level=FULL if authorized and not self.cfg.get('agents', {}).get('back') else NONE,
             instructions=await self.instructions(authorized, group_moderation=source.kind == 'group'),
             model=selection[0] if selection else profile.get('model'),
             effort=selection[1] if selection else profile.get('effort'))
+        if authorized and self.cfg.get('agents', {}).get('back'):
+            request.instructions += '\n' + prompts.FRONT_DESK
+        return request
 
     async def thread_for(self, source, authorized):
         return await self.agent_for(source).prepare(await self.turn_request(source, authorized))
 
+    @serialized
     async def effort_command(self, source, text):
         if not owner_request(source, self.cfg['owner_qq']):
             await self.send(source, '推理强度管理仅限主人使用。')
@@ -377,6 +385,7 @@ class Bridge:
         self.save_selection(source, name, target)
         await self.send(source, '当前会话 effort 已设为 ' + target + '，下一条消息生效，模型和聊天上下文保留。')
 
+    @serialized
     async def model_command(self, source, text):
         # Defense in depth: never query the catalog or change a thread for a guest.
         if not owner_request(source, self.cfg['owner_qq']):
@@ -463,8 +472,7 @@ class Bridge:
         answer_sender = asyncio.create_task(self.relay_answer(source, answer_queue)) if authorized else None
         selection = self.selection(source)
         if request is None:
-            request = TurnRequest(self.conversation(source), text, CHAT,
-                                  FULL if authorized else NONE, '')
+            request = await self.turn_request(source, authorized, text)
         request.text, request.session_id = text, thread
         profile = getattr(self.agent_for(source), 'profile', {})
         request.model = selection[0] if selection else profile.get('model')
@@ -495,7 +503,12 @@ class Bridge:
                         await reporter
         return reply
 
+    @serialized
     async def chat(self, source, text, context_id=None, image_paths=()):
+        async with self.front_execution(source, self.agent_for(source)):
+            return await self._chat(source, text, context_id, image_paths)
+
+    async def _chat(self, source, text, context_id=None, image_paths=()):
         authorized = owner_request(source, self.cfg['owner_qq'])
         key = self.conversation(source)
         self.__dict__.setdefault('_history_replies', {}).pop(key, None)
@@ -523,7 +536,17 @@ class Bridge:
         while True:
             incoming = await self.queue.get()
             source, text = incoming.source, incoming.text
+            guard = self.conversation_lock(source)
+            acquired = False
             try:
+                await guard.__aenter__()
+                acquired = True
+                head = text.split(maxsplit=1)[0].casefold() if text.strip() else ''
+                if head in ('/stop', '/tasks'):
+                    await self.fast_command(source, text)
+                    continue
+                if head == '/task' and not owner_request(source, self.cfg['owner_qq']):
+                    continue
                 if self.blocked(source):
                     continue
                 if source.kind == 'group' and not owner_request(source, self.cfg['owner_qq']) and obvious_abuse(text):
@@ -544,6 +567,9 @@ class Bridge:
                     except (RuntimeError, OSError, ValueError, sqlite3.Error, asyncio.TimeoutError):
                         logging.warning('Model management failed')
                         await self.send(source, '模型操作未完成，请稍后重试；用 /model 或 /effort 可重新检查当前状态。')
+                    continue
+                if head == '/task':
+                    await self.task_command(source, text)
                     continue
                 if incoming.attachments:
                     try:
@@ -567,7 +593,9 @@ class Bridge:
                     await self.agent_for(source).reset(self.conversation(source))
                     self.db.execute("DELETE FROM history WHERE conversation=?", (self.conversation(source),))
                     self.db.commit()
-                    await self.send(source, "已清空聊天上下文，可以开始新话题。")
+                    count = len(self.tasks.list(self.conversation(source), live=True)) if hasattr(self, 'tasks') else 0
+                    notice = f'仍有 {count} 个后台任务未结算，结果会回到新会话。' if count else ''
+                    await self.send(source, '已清空聊天上下文，可以开始新话题。' + notice)
                 elif text == "/session":
                     thread = self.agent_for(source).session_id(self.conversation(source))
                     await self.send(source, "当前会话：" + (thread if thread else "尚未创建；发送一条消息即可创建。"))
@@ -586,7 +614,7 @@ class Bridge:
                         continue
                     await self.send(source, '已加入群聊用户黑名单。' if parts[0] == '/block' else '已解除群聊用户拉黑。')
                 elif text == "/help":
-                    await self.send(source, "Aemeath：主人在私聊或群聊可请求Linux操作，其他人仅文字聊天；Windows文件只读。群聊需@机器人并附文字或图片，或喊Aemeath、爱弥斯、ams、小爱（英文不分大小写）。图片识别仅主人可用，每条最多5张、每张20 MiB，支持PNG、JPEG、WebP、GIF。文件附件仅主人私聊接收。/ping、/help 所有人可用；/new 创建新会话、/session 查看会话ID、/models 查看可选模型、/model 查看当前模型、/model 模型名 切换、/model default 恢复默认、/effort 查看强度、/effort 档位 切换强度、/effort default 恢复模型默认强度、/blacklist 查看群聊用户黑名单、/block QQ号 拉黑、/unblock QQ号 解除拉黑仅限主人。黑名单用户的群消息静默忽略。")
+                    await self.send(source, "Aemeath：主人在私聊或群聊可请求Linux操作，其他人仅文字聊天；Windows文件只读。群聊需@机器人并附文字或图片，或喊Aemeath、爱弥斯、ams、小爱（英文不分大小写）。图片识别仅主人可用，每条最多5张、每张20 MiB，支持PNG、JPEG、WebP、GIF。文件附件仅主人私聊接收。/ping、/help 所有人可用；/new 创建新会话、/session 查看会话ID、/models 查看可选模型、/model 查看当前模型、/model 模型名 切换、/model default 恢复默认、/effort 查看强度、/effort 档位 切换强度、/effort default 恢复模型默认强度、/task 完整目标 手动交给后台、/task release 编号 人工释放待确认任务、/tasks 查看当前会话任务、/stop 停前台、/stop 编号 停任务、/stop all 停本会话全部后台任务、/blacklist 查看群聊用户黑名单、/block QQ号 拉黑、/unblock QQ号 解除拉黑仅限主人。黑名单用户的群消息静默忽略。")
                 elif len(text) > 6000:
                     await self.send(source, "这条消息较长，请拆成每条不超过6000字。")
                 else:
@@ -597,26 +625,24 @@ class Bridge:
                             self.auto_block(source)
                             continue
                         reply = bounded_guest_reply(reply)
-                    if not streamed:
-                        await self.send(source, reply)
-                    # Enqueue only completed replies, after guest moderation and text delivery.
-                    # Progress, commands and error notices remain text-only.
-                    await self.enqueue_voice(source, reply)
-                    self.db.executemany(
-                        "INSERT INTO history (role, content, conversation) VALUES (?, ?, ?)",
-                        [("user", text, self.conversation(source)), ("assistant", getattr(self, '_history_replies', {}).pop(self.conversation(source), reply), self.conversation(source))])
-                    self.db.commit()
+                    await self.deliver(source, reply, text, streamed=streamed)
                     logging.info("Chat reply delivered")
+            except Interrupted:
+                pass  # front_execution already reports the confirmed outcome.
             except Exception as error:
                 logging.exception("Chat delivery failed")
                 with contextlib.suppress(Exception):
                     await self.send(source, "这次回复未能完成，请稍后重试；可先发送 /ping 检查 QQ 连接。")
             finally:
+                if acquired:
+                    await guard.__aexit__(None, None, None)
                 self.queue.task_done()
 
     async def session(self, ws):
         self.ws = ws
         worker = asyncio.create_task(self.worker())
+        controls = set()
+        reports = asyncio.create_task(self.flush_task_reports()) if hasattr(self, 'tasks') else None
         try:
             async for payload in ws:
                 event = json.loads(payload)
@@ -651,6 +677,13 @@ class Bridge:
                     if triggered is None:
                         continue
                     incoming = Incoming(incoming.source, incoming.text, incoming.attachments, context_id, incoming.images)
+                head = incoming.text.split(maxsplit=1)[0].casefold() if incoming.text.strip() else ''
+                if head in ('/stop', '/tasks'):
+                    if owner_request(incoming.source, self.cfg['owner_qq']):
+                        control = asyncio.create_task(self.fast_command(incoming.source, incoming.text))
+                        controls.add(control)
+                        control.add_done_callback(controls.discard)
+                    continue
                 try:
                     self.queue.put_nowait(incoming)
                 except asyncio.QueueFull:
@@ -658,6 +691,12 @@ class Bridge:
                     continue
                 logging.info("Allowed %s message queued", incoming.source.kind)
         finally:
+            for control in controls:
+                control.cancel()
+            await asyncio.gather(*controls, return_exceptions=True)
+            if reports:
+                reports.cancel()
+                await asyncio.gather(reports, return_exceptions=True)
             worker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await worker
@@ -670,8 +709,9 @@ class Bridge:
             self.ws = None
 
     async def run(self):
-        for name in dict.fromkeys(settings(self.cfg)[:2]):
+        for name in dict.fromkeys((*settings(self.cfg)[:2], *self.cfg.get('agents', {}).get('back', []))):
             await self.agents[name].start()
+        await self.tasks.recover_after_restart()
         logging.info("App Server initialized")
         while True:
             try:

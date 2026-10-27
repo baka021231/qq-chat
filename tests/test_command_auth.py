@@ -62,6 +62,14 @@ class CommandAuthTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('id-group', self.sent[-1])
             self.assertEqual(self.snapshot(), before)
 
+    async def test_task_commands_from_guests_are_silent_and_do_not_touch_state(self):
+        before = self.snapshot()
+        for source in (Source('group', 999, 789, '主人'), Source('private', 789, 789)):
+            for command in ('/task edit file', '/task release 1', '/tasks', '/stop', '/stop all', '/STOP 1'):
+                await self.dispatch(source, command)
+                self.assertEqual(self.sent, [])
+                self.assertEqual(self.snapshot(), before)
+
     async def test_owner_can_reset_only_own_group_thread(self):
         await self.dispatch(Source('group', 999, 123), '/new')
         threads = dict(self.bridge.db.execute('SELECT * FROM threads'))
