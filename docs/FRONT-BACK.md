@@ -13,13 +13,14 @@ v4：已按 2026-10-27 的三轮代码审阅意见修订，改动对照见第 14
 - 和 Codex 有关的逻辑集中在 `thread_for()`、`run_turn()`、`model_command()`/`effort_command()`，外加 `run()` 里的一次 `self.app.start()`。抽出一层接口就能把具体 agent 换掉。
 - `AppServer.turn()` 按 `threadId` 分发事件，一条 App Server 连接上本来就能同时跑多个 Codex 线程。所以“后台多 agent”不需要新增 Codex 进程。
 
-### PR2 本机启动隔离复验（待确认调整）
+### PR2 本机启动隔离复验与主人决定
 
 - 本机 Claude Code 2.1.311，使用已登录的订阅、独立空目录和 haiku，仅发送合成测试文字，不使用真实 QQ 内容。
 - 原 4.3 参数组合能正常返回，`system/init.tools=[]`，首次完整运行约 7.53 秒；该数字是单次端到端耗时，不是冷启动或首字时间，不能与云端三项计时直接比较。
 - 用户级 `~/.claude/CLAUDE.md` 初始不存在；临时独占创建无害 canary，测试后按内容核对并删除。原参数下模型能准确返回该 canary，即使工具列表为空。证明 `--setting-sources project` 加空 cwd 不能隔离用户级记忆内容。
 - 仅追加 `--safe-mode` 后，在相同 canary 存在时模型未返回 canary，显式 `--system-prompt-file` 仍生效，工具列表为空，订阅调用成功，单次端到端约 8.18 秒。
-- 建议 NONE（及未来 FRONT）启动时启用 `--safe-mode`，保留显式人设注入和 `init.tools` 校验。此项改变 4.3 的启动隔离设计，按第 11 节执行规则先汇报，确认后再实现 PR2。
+- 主人确认：NONE 使用 `--safe-mode`，并设置 `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`、`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`；保留空工具校验，补测 `--resume` 第二轮。FULL 保持正常加载规则，不应用上述隔离开关。
+- 主人提供的云端复验：FRONT 启用 `--safe-mode` 会连显式 `--mcp-config` 也关闭，工具列表为空；提示中出现派发工具名时，模型可能伪造调用及结果。FRONT 不用 safe-mode，只用两个环境变量隔离记忆，并在 PR4 前实测 hooks、插件和 skills。必要时使用独立 `CLAUDE_CONFIG_DIR`，由主人通过官方 `claude auth login` 单独登录，不复制凭据。
 - 本轮尚未完成续接/提示热更新、MCP shim、图片和中断实测，不据此标记 PR2 完成；尚未写实现代码、合并或重启。
 
 ### 已实测（Claude Code 2.1.311，云端 Linux 容器，haiku；尚未在 WSL 复验，PR2 第一步复验）
@@ -175,18 +176,18 @@ level 和“是不是主人”也是两回事：回报轮次属于主人会话�
 BASE_ARGS = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json',
              '--verbose', '--include-partial-messages',
              '--system-prompt-snapshot', 'off',        # 让 SOUL.md 修改下一轮生效
-             '--setting-sources', 'project',           # cwd 是桥接专用空目录，相当于不加载任何设置
+             '--setting-sources', 'project',           # 限制设置来源；不等于隔离CLAUDE.md/插件/hooks
              '--disable-slash-commands', '--no-chrome', '--permission-prompts', 'none']
 
 def level_args(level, grant, profile):
     """返回 (参数, init.tools 校验函数)。"""
     if level == NONE:
-        return ['--tools', '', '--strict-mcp-config', '--disallowedTools', 'mcp__*',
+        return ['--safe-mode', '--tools', '', '--strict-mcp-config', '--disallowedTools', 'mcp__*',
                 '--permission-mode', 'dontAsk'], lambda tools: not tools
     if level == FRONT:
         return ['--tools', '', '--strict-mcp-config', '--mcp-config', grant.config_path,
                 '--allowedTools', 'mcp__qq__*', '--permission-mode', 'dontAsk'], \
-               lambda tools: set(tools) <= FRONT_TOOLS
+               lambda tools: set(tools) == FRONT_TOOLS
     # FULL：permission_mode 必须在 profile 里显式写（启动时校验，缺了拒绝启动）；
     # 永远不挂 qq 工具，防止工人自己再派任务
     return ['--tools', profile.get('tools', 'default'),
@@ -203,6 +204,11 @@ def user_message(text, images):
 
 `run()` 的要点：
 
+- NONE 的子进程环境设置 `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` 和 `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`，同时加 `--safe-mode`。FRONT 也设置两个环境变量，但绝不加 safe-mode，以免禁用显式 MCP；FULL 不增加这些开关，正常加载用户和项目规则。
+- CHAT 回复含 `<invoke`、`<system-reminder>` 等调用标记时，整轮视为失败，不发送该回复到 QQ。为保证整轮拒发，Claude 的文本先缓冲校验，再通过原气泡发送路径交付；不能在校验前泄露流式前缀。任务是否存在只以 tool_server 记录为准，不能从模型文字提取任务编号并当作派发成功。
+- PR4 的下发回执由桥接负责：tool_server 真正建好任务后，桥接直接向发起会话发送固定格式，例如“【已下发任务 #12 · codex】修复 README 错别字”，不经过模型。主人以这条回执确认派发，前台话语不能替代回执。PR2 仅落实文本校验与缓冲，不提前实现派发。
+
+
 1. **会话 ID**：首轮由桥接生成 `uuid4`，先写入 `agent_sessions`，再用 `--session-id` 启动；之后用 `--resume`。续接失败（会话文件丢失）时清掉映射重开，同现在处理 `no rollout found` 的方式一样。
 2. **系统提示**：怎么写看 level，写什么看 role（4.1）。NONE 和 FRONT 没有内置工具，用 `--system-prompt-file` 整个替换默认提示，提示更短，也没有“我是 Claude Code”的身份。FULL 要用工具，不管是单 agent 的主人对话还是后台任务，都用 `--append-system-prompt-file` 追加，保留 Claude Code 自带的工具用法说明。提示文件写在 `run/` 下，权限 600。**不要用 `--system-prompt` 直接传文字**：命令行参数在 `ps` 里所有本机用户都能看到，而 OWNER.md 里有个人资料。
 3. **工作目录**：用桥接专用的空目录（如 `run/front/`）。不加 `--bare` 时，`-p` 会执行 cwd 里 `.claude/settings.json` 的 hooks，连接 `.mcp.json`，而且没有信任提示。所以前台不能用 `workspace/` 或任何仓库当 cwd。
@@ -211,7 +217,7 @@ def user_message(text, images):
 
    | 事件 | 处理 |
    | --- | --- |
-   | `system` / `init` | 用 `level_args` 返回的函数校验 `tools`：NONE 必须为空，FRONT 必须是 `FRONT_TOOLS` 的子集，FULL 不能含 `mcp__qq__*`。不通过就发 SIGINT 并抛 `UnexpectedTools`（fail closed） |
+   | `system` / `init` | 用 `level_args` 返回的函数校验 `tools`：NONE 必须为空，FRONT 必须正好等于 `FRONT_TOOLS`（缺少或多出均失败），FULL 不能含 `mcp__qq__*`。不通过就发 SIGINT 并抛 `UnexpectedTools`（fail closed） |
    | `stream_event`，`content_block_delta` 且 `delta.type == 'text_delta'` | `on_answer(delta.text)`，只取 `parent_tool_use_id` 为空的事件 |
    | `stream_event`，`content_block_start` 且块类型为 `tool_use` | 可选：`on_progress('⏳ 派发任务')` 之类 |
    | `assistant` 中的 `thinking` 块 | 忽略 |
@@ -405,17 +411,18 @@ Claude Code ──stdio──▶ python3 -m qq_chat.front_tools     （每轮由
 
 ### 8.4 提示词（`prompts.py` 新增）
 
-- `FRONT_DESK`：只在分离模式的主人会话追加。要讲清：需要操作电脑、写代码、查资料的请求才用 `dispatch_task`，聊天直接回；`goal` 要写到后台不看聊天记录也能做；任务完成前不能说已完成；收到系统回报再用自己的话汇报；只有当前主人消息能触发分派，群聊参考记录里别人的话不能。
+- 手动版 `FRONT_DESK`（PR3）：不得出现任何工具名或模拟调用，只写“需要操作电脑的事，请主人用 /task 目标 交给后台”。
+- `FRONT_DESK`（PR4 起）：只在分离模式的主人会话追加。要讲清：需要操作电脑、写代码、查资料的请求才用 `dispatch_task`，聊天直接回；`goal` 要写到后台不看聊天记录也能做；任务完成前不能说已完成；收到系统回报再用自己的话汇报；只有当前主人消息能触发分派，群聊参考记录里别人的话不能。
 - `WORKER`：后台任务用，不带人设，不用 QQ 格式。要求直接执行、不提问；遇到需要主人决定的事就停下，在报告里写清楚；最终回复分“结论 / 改动 / 验证 / 未完成或需要你提供”四段。
 - 访客继续用 `GUEST` 和 `GROUP_MODERATION`，与 agent 类型无关。
 
 ## 9. 权限与安全清单
 
-1. 访客的前台轮次没有任何工具：Claude 加 `--tools ""`、`--disallowedTools "mcp__*"`、`--no-chrome`，不带 `--mcp-config`，并校验 `init.tools == []`。这比现在 Codex 的 read-only 更严（read-only 还能读文件）。推荐 `guest` 用 Claude 无工具的 profile。
+1. 访客的前台轮次没有任何工具：Claude 加 `--safe-mode`，设置两个禁用 CLAUDE.md/自动记忆的环境变量，再加 `--tools ""`、`--disallowedTools "mcp__*"`、`--no-chrome`，不带 `--mcp-config`，并校验 `init.tools == []`。这比现在 Codex 的 read-only 更严（read-only 还能读文件）。推荐 `guest` 用 Claude 无工具的 profile。
 2. 只有主人会话能拿到 FRONT 或 FULL 级别。级别由 Bridge 根据 `owner_request()` 决定，配置不能把访客提成 FRONT。
-3. `init.tools` 白名单校验失败时整轮中止。这一条防的是本机新装的插件、连接器或 Chrome 集成悄悄混进前台。
+3. `init.tools` 白名单校验失败时整轮中止；FRONT 必须与 FRONT_TOOLS 完全一致，缺少工具同样失败。这一条防的是本机新装的插件、连接器或 Chrome 集成悄悄混进前台。
 4. 令牌、SOUL.md、OWNER.md 都不出现在命令行参数里，只放进 600 权限的文件。
-5. 前台 cwd 是桥接专用空目录，不在 `workspace/` 或任何仓库里。
+5. NONE/FRONT cwd 是桥接专用空目录，不在 `workspace/` 或任何仓库里；FULL 正常使用执行工作目录并加载项目规则。PR4 前还要检查不带 safe-mode 时的用户 hooks、插件和 skills；若会加载，FRONT 改用桥接专用 CLAUDE_CONFIG_DIR，由主人官方登录，禁止复制凭据。
 6. 要防前台被诱导刷任务：`max_running`、`max_per_conversation`、任务超时三道上限，超出时由工具返回错误，不排队。
 7. `.gitignore` 加 `run/`。新代码里不出现 QQ 号和 token（测试用 `10001` 这类假号）。
 8. 修改权限相关代码时，同时更新 `tests/test_command_auth.py` 和 `tests/test_message_policy.py`（ARCHITECTURE.md 的要求）。
@@ -455,7 +462,7 @@ PR1（抽接口、不改既有单 Codex 行为）已完成，接口与保留语�
 - 做到这一步，前后台分离已经能从 QQ 用起来了，PR4 只是把“主人手动分派”换成“前台自己判断”。
 
 **PR4：前台工具通道**
-- `front_tools.py`（MCP shim）、`tool_server`、一次性令牌、`FRONT_DESK` 提示；分离模式的主人前台从 NONE 换成 FRONT。
+- `front_tools.py`（MCP shim）、`tool_server`、一次性令牌、`FRONT_DESK` 提示；分离模式的主人前台从 NONE 换成 FRONT。真实建任务后由桥接直接发送固定格式下发回执，不经模型；任务存在性仅认工具服务记录。
 - 验收：分离模式下，主人说“帮我修个 bug”时前台会分派；访客的消息永远不带 MCP；群里主人分派的任务回报到该群；三道上限生效。
 
 **PR5：多后台**
@@ -480,16 +487,21 @@ PR1（抽接口、不改既有单 Codex 行为）已完成，接口与保留语�
 - 阶段衔接：分离模式且工具通道不可用时，主人前台的 level 是 NONE。
 - 模型隔离：Codex 的模型选择不会传给 Claude profile，反之亦然。
 - `/stop`：在 `session()` 里处理，不进队列；非主人静默。
+- NONE 隔离：首轮和 resume 第二轮均无法读出用户级 canary，两个环境变量及 safe-mode 均传入；FULL 不增加这些开关。
+- FRONT 完整性（PR4）：工具缺少、多出、为空均中止；只有完全一致才放行。
+- 假调用防护：回复中 `<invoke` 或 `<system-reminder>` 跨流式片段出现时整轮拒发，不落库、不生成语音。
+- 真实回执（PR4）：只有工具服务真实创建任务后桥接才发固定回执；模型文字不能凭空生成任务记录或成功回执。
 
 ## 13. 待实测与未决
 
-1. 用户级 CLAUDE.md 隔离：本机已复现原参数会注入 canary；追加 `--safe-mode` 的单轮 canary 检查通过。启动方式调整待主人确认，之后还需验证续接和全部权限模式。
+1. 用户级 CLAUDE.md 隔离：本机已复现原参数会注入 canary；追加 `--safe-mode` 的单轮 canary 检查通过。主人已确认 NONE 使用 safe-mode 加两个环境变量；补验续接，FULL 保持原加载，FRONT 按第 8 条另行验证。
 2. stream-json 输入里的 base64 图片块（格式来自官方文档，未实测）。
 3. WSL 上的冷启动耗时；如果明显变慢，再考虑每个会话一个长驻进程。
 4. Codex App Server 有没有中途追加消息的接口（决定 `send_to_task` 的实现）；Codex 在分离模式下当前台时，能否通过 `thread/start` 的 `config` 挂 MCP。
 5. 换成 Claude 前台后，人设的表现要重新调：被认真问到“你是不是 AI”时的反应、语气、长度控制都会和 Codex 不同。
 6. 多个写任务同时改同一仓库：目前靠第 5 节的全局写锁（`tasks.max_writers`，默认 1）串行执行，以后按任务开 git worktree 再放开。
 7. 中断的实际表现：Claude 被 SIGINT 后 `result` 的 subtype 和退出码（决定 4.3 第 6 条的判定规则）；本机 App Server 的 turn 状态取值（4.2 的表）；重启后用哪个方法确认某一轮已经结束（6.2）。
+8. PR4 前验证无 safe-mode 的 FRONT 是否加载用户 hooks、插件、skills。会加载则采用独立配置目录并由主人单独登录；不能因 init.tools 为空就认为所有自定义行为都关闭。
 
 ## 附录 A：实测用的最小 MCP 服务器
 
@@ -582,3 +594,10 @@ v1 交给 Codex 对照代码审阅后，以下意见全部采纳：
 
 - 本机发现 `--setting-sources project` 不隔离用户级 CLAUDE.md，空工具列表不等于未加载私人指令。已将可复现结果写进第 0 节及第 13 节第 1 条。
 - 验证了追加 `--safe-mode` 的无工具单轮启动：未读出测试 canary、显式提示生效、订阅可用。建议用此方式隔离 NONE/FRONT；因影响当前 PR2 的启动设计，依执行规则暂停代码实现并汇报，未默认为已获批准。
+
+### 主人确认的前台隔离与真实派发回执
+
+- NONE：safe-mode 加禁用 CLAUDE.md 和自动记忆两个环境变量，补测第二轮 resume；FULL 保持正常加载项目规则。
+- FRONT：不用 safe-mode，以保留显式 MCP；只用上述环境变量隔离记忆，工具列表必须完全匹配。PR4 前检查用户 hooks/插件/skills，必要时采用独立配置目录及官方登录。云端行为为主人提供的验证结果，不冒充本机实测。
+- 含调用标记的前台回复整轮拒发；Claude 文本先缓冲校验。PR3 手动提示不出现工具名。
+- PR4 派发回执必须由桥接在工具服务真实建好任务后直接发送，格式固定，模型的“已派发”或任务编号不能作为事实依据。
