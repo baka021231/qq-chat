@@ -70,6 +70,12 @@ async def run_jobs(command, output_dir, jobs, metadata):
                     expected = hashlib.sha256(request['prompt_text'].encode()).hexdigest()
                     if metrics.get('reference_text_sha256') != expected:
                         raise ValueError('Backend did not confirm requested reference text')
+                if 'expected_reference_text_sha256' in job:
+                    if metrics.get('reference_text_sha256') != job['expected_reference_text_sha256']:
+                        raise ValueError('Backend package reference text differs from expected')
+                if 'expected_reference_override' in job:
+                    if metrics.get('reference_text_override') is not job['expected_reference_override']:
+                        raise ValueError('Unexpected reference text override')
                 audio = base64.b64decode(response['wav'], validate=True)
                 validate_wav(audio)
                 with (output_dir / name).open('xb') as target: target.write(audio)

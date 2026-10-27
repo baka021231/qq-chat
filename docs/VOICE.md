@@ -1,5 +1,17 @@
 # 本地爱弥斯语音
 
+## 当前默认与参考原句复刻
+
+按主人最新要求，日常语音仍关闭，后端默认种子现为 7，temperature=1.0。运行命令已移除 `--reference-text-file`，因此参考文案使用模型包原始 `reference.txt`：“同桌，你好~我是拉贝尔学部的爱弥斯，和你一样。”。先前的 `reference-confirmed.txt` 和所有实验样本作为历史保留，不再由日常命令加载。
+
+```sh
+python3 tools/resynth_reference.py --output-dir samples/voice/2026-10-27-resynth
+```
+
+该实验使用同一参考音频，目标文字也是上述原句；专门绕过聊天文字清洗，保留“~”。请求只显式传入种子 7/9/1 和 temperature=1.0，不传 `prompt_text`，同时验证实际参考文案 SHA256 与覆盖状态；CPU 回退也必须使用同一参考音频与原文。输出为 `resynth-7.wav`、`resynth-9.wav`、`resynth-1.wav`。其余切分、淡入淡出与采样参数保持不变。
+
+原先 `benchmark_voice.py` 的 before/after 实验仍固定种子 42，工具现在显式传入 42，不受日常默认种子改变影响。需要回退本次配置时，仅恢复本地 `voice-config-before-resynth.json` 的 voice 字段；源码独立提交可回滚。
+
 ## 优化步骤与回退（2026-10-27）
 
 原始样本、每步 WAV、指标、GPU 检查和原语音配置快照保存在本地 `workspace/voice-tests/20261027-optimization/`。同一原文、种子 42；耗时同时标注冷启动总耗时和后端可报告的加载/合成耗时，不将不同口径混为速度提升。
@@ -26,7 +38,7 @@ python3 tools/benchmark_voice.py --output-dir workspace/voice-tests/20261027-opt
 
 `cpu-fallback.wav` 在 `CUDA_VISIBLE_DEVICES=-1` 下真实生成，报告 provider=cpu，回退原因 RuntimeError；冷启动 20.620 秒（该次与 GPU 校验并行，不能用于性能优劣结论）。CPU 完整包的条件测试仅在 GPU 无法使用时才必要；本机 CUDA 完整包已跑通，因此未额外跑 CPU 完整包计时。
 
-批量扫描默认用同一句测试原文、种子 0–9、temperature 0.7/1.0/1.3，共 30 条。后端协议接受 `seed` 和 `temperature`，缺省仍为 42 和 1.0；后端回传实际值，批量工具会逐条核对，避免实际忽略参数却声称完成扫描。使用单个常驻进程，首条 roundtrip 包含冷启动，其余不含；清单另有每条纯合成时间。清单包含有效输入与公开模型信息，不包含本机凭据或完整命令。工具不发送 QQ 消息且拒绝覆盖现有输出目录。
+批量扫描默认用同一句测试原文、种子 0–9、temperature 0.7/1.0/1.3，共 30 条。后端协议接受 `seed` 和 `temperature`，当前缺省为 7 和 1.0；后端回传实际值，批量工具会逐条核对，避免实际忽略参数却声称完成扫描。使用单个常驻进程，首条 roundtrip 包含冷启动，其余不含；清单另有每条纯合成时间。清单包含有效输入与公开模型信息，不包含本机凭据或完整命令。工具不发送 QQ 消息且拒绝覆盖现有输出目录。
 
 ```sh
 python3 tools/batch_voice.py --output-dir samples/voice/2026-10-27-grid

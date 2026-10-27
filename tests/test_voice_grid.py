@@ -13,7 +13,7 @@ from tools.voice_backend import sampling_parameters
 
 class SamplingTests(unittest.TestCase):
     def test_defaults_and_requested_parameters(self):
-        self.assertEqual(sampling_parameters({}), {'seed': 42, 'temperature': 1.0})
+        self.assertEqual(sampling_parameters({}), {'seed': 7, 'temperature': 1.0})
         self.assertEqual(sampling_parameters({'seed': 9, 'temperature': .7}), {'seed': 9, 'temperature': .7})
         for params in ({'seed': True}, {'seed': -1}, {'seed': 2**32}, {'temperature': True},
                        {'temperature': float('nan')}, {'temperature': float('inf')}, {'temperature': 0}, {'temperature': 3}):

@@ -30,7 +30,7 @@ def load_reference_text(path):
 
 
 def sampling_parameters(request):
-    seed = request.get('seed', 42)
+    seed = request.get('seed', 7)
     temperature = request.get('temperature', 1.0)
     if type(seed) is not int or not 0 <= seed <= 2 ** 32 - 1:
         raise ValueError('seed must be an unsigned 32-bit integer')
@@ -83,6 +83,7 @@ def main():
                                           fragment_interval=args.fragment_interval,
                                           prompt_text=prompt, prompt_lang='zh')
                 synthesis_seconds = time.perf_counter() - started
+                effective_prompt = prompt if prompt is not None else engine.engine.reference_text
                 output = io.BytesIO()
                 soundfile.write(output, audio, 32000, format='WAV', subtype='PCM_16')
             response = {'wav': base64.b64encode(output.getvalue()).decode('ascii'), 'metrics': {
@@ -91,7 +92,7 @@ def main():
                 'text_split_method': args.text_split_method,
                 'fragment_interval': args.fragment_interval, 'fade_ms': args.fade_ms,
                 'reference_text_override': prompt is not None,
-                'reference_text_sha256': hashlib.sha256(prompt.encode()).hexdigest() if prompt else None,
+                'reference_text_sha256': hashlib.sha256(effective_prompt.encode()).hexdigest(),
                 **sampling}}
         except Exception as error:
             print('Speech synthesis failed: ' + type(error).__name__, file=sys.stderr, flush=True)

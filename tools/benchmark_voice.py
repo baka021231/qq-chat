@@ -35,7 +35,7 @@ def main():
         parser.error('Refusing to overwrite existing benchmark artifacts')
     cfg = json.loads((BASE / 'config.json').read_text())['voice']
     start = time.perf_counter()
-    process = subprocess.run(cfg['command'], input=json.dumps({'text': text}, ensure_ascii=False) + '\n',
+    process = subprocess.run(cfg['command'], input=json.dumps({'text': text, 'seed': 42, 'temperature': 1.0}, ensure_ascii=False) + '\n',
                              capture_output=True, text=True, timeout=240)
     elapsed = time.perf_counter() - start
     targets['.stderr.log'].write_text(process.stderr)
