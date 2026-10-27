@@ -1,0 +1,107 @@
+{
+  "experiment": "exact original reference resynthesis",
+  "reference_text": "同桌，你好~我是拉贝尔学部的爱弥斯，和你一样。",
+  "text_cleaning": "bypassed: preserve exact original sentence including ~",
+  "reference_audio_sha256": "c6a66db43b9b4686fb9485c90df3108c71835ba8a6e89bf10a5323726e01d490",
+  "seeds": [
+    7,
+    9,
+    1
+  ],
+  "temperature": 1.0,
+  "reference_text_override": false,
+  "daily_voice_enabled": false,
+  "source_commit": "bd164cf1fc010d8d5cb185b5e98550825f15c437",
+  "context": {
+    "model": "aimisiV2",
+    "source_model_version": "v2Pro",
+    "precision_profile": "fp32",
+    "runtime_revision": 8,
+    "text_split_method": "cut3",
+    "fragment_interval": 0.35,
+    "fade_ms": 15,
+    "top_k": 15,
+    "top_p": 1.0,
+    "repetition_penalty": 1.35,
+    "speed_factor": 1.0,
+    "max_steps": 500
+  },
+  "status": "complete",
+  "samples": [
+    {
+      "file": "resynth-7.wav",
+      "seed": 7,
+      "temperature": 1.0,
+      "raw_text": "同桌，你好~我是拉贝尔学部的爱弥斯，和你一样。",
+      "text": "同桌，你好~我是拉贝尔学部的爱弥斯，和你一样。",
+      "expected_reference_text_sha256": "fab8b142a0ddfb89e011df45288f10ceeca2ba1e06f6380c3372aa84ae367efa",
+      "expected_reference_override": false,
+      "duration_seconds": 5.6,
+      "roundtrip_seconds": 14.085939894997864,
+      "sha256": "47ed2cb6cbf276da52b97194ca8f5c56469aa612deec8260d0664ce3258ff9f9",
+      "metrics": {
+        "provider": "cuda",
+        "fallback_reason": null,
+        "load_seconds": 11.858347246990888,
+        "synthesis_seconds": 2.1780597070028307,
+        "text_split_method": "cut3",
+        "fragment_interval": 0.35,
+        "fade_ms": 15,
+        "reference_text_override": false,
+        "reference_text_sha256": "fab8b142a0ddfb89e011df45288f10ceeca2ba1e06f6380c3372aa84ae367efa",
+        "seed": 7,
+        "temperature": 1.0
+      }
+    },
+    {
+      "file": "resynth-9.wav",
+      "seed": 9,
+      "temperature": 1.0,
+      "raw_text": "同桌，你好~我是拉贝尔学部的爱弥斯，和你一样。",
+      "text": "同桌，你好~我是拉贝尔学部的爱弥斯，和你一样。",
+      "expected_reference_text_sha256": "fab8b142a0ddfb89e011df45288f10ceeca2ba1e06f6380c3372aa84ae367efa",
+      "expected_reference_override": false,
+      "duration_seconds": 4.56,
+      "roundtrip_seconds": 1.701984771003481,
+      "sha256": "1a3323870f783a0a653286c7468cc3b70a6c8ce054aaa4f76709dcff652593e7",
+      "metrics": {
+        "provider": "cuda",
+        "fallback_reason": null,
+        "load_seconds": 11.858347246990888,
+        "synthesis_seconds": 1.6993725550128147,
+        "text_split_method": "cut3",
+        "fragment_interval": 0.35,
+        "fade_ms": 15,
+        "reference_text_override": false,
+        "reference_text_sha256": "fab8b142a0ddfb89e011df45288f10ceeca2ba1e06f6380c3372aa84ae367efa",
+        "seed": 9,
+        "temperature": 1.0
+      }
+    },
+    {
+      "file": "resynth-1.wav",
+      "seed": 1,
+      "temperature": 1.0,
+      "raw_text": "同桌，你好~我是拉贝尔学部的爱弥斯，和你一样。",
+      "text": "同桌，你好~我是拉贝尔学部的爱弥斯，和你一样。",
+      "expected_reference_text_sha256": "fab8b142a0ddfb89e011df45288f10ceeca2ba1e06f6380c3372aa84ae367efa",
+      "expected_reference_override": false,
+      "duration_seconds": 3.96,
+      "roundtrip_seconds": 1.480564676996437,
+      "sha256": "8495e7a93307951e4facdc38b7a780466b36c40a95927d578b6ac472d1fd444a",
+      "metrics": {
+        "provider": "cuda",
+        "fallback_reason": null,
+        "load_seconds": 11.858347246990888,
+        "synthesis_seconds": 1.478197837001062,
+        "text_split_method": "cut3",
+        "fragment_interval": 0.35,
+        "fade_ms": 15,
+        "reference_text_override": false,
+        "reference_text_sha256": "fab8b142a0ddfb89e011df45288f10ceeca2ba1e06f6380c3372aa84ae367efa",
+        "seed": 1,
+        "temperature": 1.0
+      }
+    }
+  ]
+}
