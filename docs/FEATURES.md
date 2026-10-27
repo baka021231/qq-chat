@@ -94,6 +94,7 @@ Claude `/models` 读取 profile 的配置目录，`/model default` 恢复其配�
 - 该轮 30 条 WAV、逐句对比索引、完整清单和校验和位于 `samples/voice/2026-10-27-reference-grid/`，全部经过 CUDA 合成及参数核对，等待主人人工分析，不自动选优。
 - 主人随后要求参考文案恢复模型包原文“同桌，你好~我是拉贝尔学部的爱弥斯，和你一样。”，运行配置已去掉 `--reference-text-file`，默认种子改为 7。`tools/resynth_reference.py` 不经过聊天文本清洗，逐字合成参考原句，使用种子 7/9/1、temperature=1.0；校验没有参考覆盖且实际文案哈希正确。日常语音保持关闭。
 - 三条复刻样本与试听说明位于 `samples/voice/2026-10-27-resynth/`，文件为 `resynth-7.wav`、`resynth-9.wav`、`resynth-1.wav`；均实际通过 CUDA 合成，包含原音频哈希、实际原文哈希、参数、计时和校验和。
+- 本机现改用独立 Linux V5 IndexTTS 后端，日常语音仍关闭。原 ONNX 后端与模型保留作手动回退，以上种子/temperature/参考文案扫描工具仍专用于 ONNX；新后端以固定参考音频、贪心解码和种子 42 合成，并转换为相同的 32 kHz WAV 协议。V5 短句及 134 字长句已通过生产常驻进程接口实际合成，尚未人工试听；安装、清理范围与指标见 `VOICE.md`。
 
 | | 图片 | 文件附件 |
 | --- | --- | --- |

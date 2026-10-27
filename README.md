@@ -14,6 +14,7 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 | `qq_chat/reply.py` | QQ 回复分段与流式发送 |
 | `qq_chat/voice.py` | 独立语音队列、合成进程协议和音频校验 |
 | `tools/voice_backend.py` | 隔离 Python 环境中的常驻 ONNX 合成适配器 |
+| `tools/indextts_backend.py` | 独立 Linux CUDA 环境中的 V5 IndexTTS 合成适配器 |
 | `qq_chat/files.py`、`qq_chat/images.py` | 文件和图片接收 |
 | `tests/` | 离线回归测试 |
 | `tools/` | 当前可用的连接检查、重启工具 |

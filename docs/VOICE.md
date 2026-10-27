@@ -1,6 +1,37 @@
 # 本地爱弥斯语音
 
-## 当前默认与参考原句复刻
+## 当前后端：V5 IndexTTS（2026-10-28）
+
+本机 `voice.command` 已改为 `tools/indextts_backend.py`，日常语音仍为关闭状态；本次未重启桥接、未发送 QQ 测试消息。启用时沿用原有 `VoiceReplies` 队列与发送链路，不改变文字、权限或会话逻辑。ONNX 后端及模型保留作手动回退，下方旧实验记录仅描述 ONNX。
+
+主人提供的 `小爱配音_完整包_V5_20261018.zip` 为 Windows 完整发行包。本次仅提取 Linux 推理所需的 IndexTTS 引擎、V5 和共用声学模型、参考音频及许可证，共 293 个文件、5,959,883,760 字节。没有提取 Windows Python、EXE/DLL、界面与安装器、V3 权重；原 ZIP 在真实合成与保留文件校验成功后删除。保留文件及原 ZIP 的 SHA256、各文件大小记录于模型目录 `manifest.json`。V5 GPT 权重另与包内发布记录核对，SHA256 为 `ee5c19bf7c421d6b9ae74f8ab75411d6a57e220ffe515bd131a80d33d3508ebc`。
+
+- 运行目录：`~/.local/share/aemeath-voice/indextts-v5/`，其中 `engine/`、`models/`、`references/`、`licenses/` 分开保存。
+- 隔离 Python：`~/.local/share/aemeath-voice/indextts-venv/bin/python`，CPython 3.11，PyTorch/torchaudio 2.8.0+cu128。系统 Python、原 ONNX 环境及 Windows 挂载盘未改动。
+- 后端默认 CUDA，FP16 GPT；只读取本地权重，关闭 QwenEmotion、DeepSpeed、FlashAttention 和自定义 CUDA 编译。模型构造沿用包内内存映射加载方式，严格核对 GPT 权重结构，避免额外的整份 FP32 主内存拷贝。
+- 参考为 `references/音色.wav` 及 `references/跟读日常平和原声.wav`，情绪参考强度 0.55。使用贪心解码、单 beam、种子 42、repetition_penalty=5；未移植 Windows 跟读加速与 1.15 倍变速，不承诺与 Windows 输出逐样本一致。
+- 原生输出 22,050 Hz 整数幅度音频，用多相滤波重采样为桥接接受的单声道 32 kHz PCM16 WAV，保持时长和音高；每段执行原有 120 秒、8 MiB 上限与完整性检查。
+- JSONL 仅接受 `text` 和可选 `seed`，默认种子 42；不接受请求提供的模型或参考音频路径、参考文案及 temperature。stdout 仅输出协议，诊断写 stderr；合成失败保留文字。CUDA 不可用时明确失败，不会悄悄换模型；若需回退，恢复原 ONNX 配置。
+
+本机命令如下；`--device cpu` 仅为显式可选项，本次未做 CPU 大模型实测：
+
+```sh
+~/.local/share/aemeath-voice/indextts-venv/bin/python -u \
+  /home/baka/projects/qq-chat/tools/indextts_backend.py \
+  --package-dir ~/.local/share/aemeath-voice/indextts-v5 --device cuda
+```
+
+环境复建需先用 CPython 3.11 创建独立 venv，再安装 `docs/requirements-voice-indextts.lock`；无需执行包内 Windows 程序或第三方安装脚本。该锁定文件包含实际推理导入所需的依赖及其传递依赖，不等同于上游训练/WebUI 的完整环境。
+
+实测样本保存在本地 `workspace/voice-tests/20261028-indextts-v5/`，未发布到远程：
+
+- `first.wav`：5.492 秒；冷启动总耗时 23.722 秒，其中模型构造 12.873 秒、合成及转换 7.408 秒，PyTorch 峰值显存分配约 5,392 MiB。总耗时还含导入等开销，此显存指标也不等于驱动报告的进程总占用。
+- `bridge-short.wav`、`bridge-long.wav`：通过生产 `ProcessSynthesizer` 启动新适配器连续请求，同一常驻进程依次生成 4.133 秒和 32.273 秒音频；首条含启动的往返耗时 17.612 秒，134 字长句的热请求往返耗时 16.500 秒。验证了 WAV、非静音、文本清洗和进程关闭，不据此声称音色或发音已人工验收。
+- 全量测试运行 182 项，180 项通过，系统环境缺少音频科学库而跳过 2 项重采样测试；在独立语音环境运行新适配器全部 5 项测试通过，包括重采样的频率、幅度、时长校验。`pip check` 通过。
+
+回退仅需将本地 `indextts-v5/bridge-voice-before.json` 的内容恢复到配置的 `voice` 字段，保留其余字段。该快照不含其他配置或凭据。原语音为关闭状态，变更后仍关闭，因此本次无需重启；后续启用或回退运行中的语音须按桥接重启规则操作。
+
+## 原 ONNX 默认与参考原句复刻（历史记录）
 
 按主人最新要求，日常语音仍关闭，后端默认种子现为 7，temperature=1.0。运行命令已移除 `--reference-text-file`，因此参考文案使用模型包原始 `reference.txt`：“同桌，你好~我是拉贝尔学部的爱弥斯，和你一样。”。先前的 `reference-confirmed.txt` 和所有实验样本作为历史保留，不再由日常命令加载。
 
