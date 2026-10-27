@@ -344,6 +344,14 @@ Claude Code ──stdio──▶ python3 -m qq_chat.front_tools     （每轮由
 
 ## 11. 分阶段实施
 
+### 执行规则
+
+- 严格按 PR1 → PR5 的顺序，一次只做一个。实际依赖是：PR2 和 PR3 只依赖 PR1，PR4 需要 PR2 和 PR3，PR5 需要 PR3。但为了简单，顺序固定为线性，不并行。
+- 每个 PR 在独立分支 `front-back-prN` 上做。做完跑全部测试，在同一提交里更新 FEATURES、ARCHITECTURE、CHANGELOG，并把本文对应部分标记为已完成。
+- 做完不合并、不重启。把改动的文件、测试结果和待确认事项发给主人。主人确认后才合并到 main 并运行 `tools/restart_bridge.py`；重启后主人在 QQ 上验收，通过了才开始下一个 PR。
+- 做的过程中发现文档有问题：影响当前 PR、或者需要主人取舍的，先停下来汇报；只是细节的，按文档原则自己定，写进第 14 节。
+- 本文全部完成前，BACKLOG 里涉及 worker、会话、命令的其他功能先不做。#6（`/stop`）并入 PR3，#2（QQ 动作工具基础设施）和 #4（拍一拍）并入 PR4。小的 bug 修复不受限制。
+
 每个阶段一个提交或 PR：先跑测试，同一提交里更新 FEATURES/CHANGELOG，部署用 `tools/restart_bridge.py`。
 
 **PR1：抽接口，不改行为**
