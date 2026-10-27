@@ -9,6 +9,7 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 | `qq_chat/` | 桥接程序包，用 `python3 -m qq_chat` 启动 |
 | `qq_chat/bridge.py` | 消息接收、权限、会话与回复调度 |
 | `qq_chat/codex_app.py` | Codex App Server 客户端 |
+| `qq_chat/agents/` | Codex/Claude 适配器、profile 校验和状态迁移 |
 | `qq_chat/prompts.py` | 发给模型的提示词（权限指令、历史与群聊上下文、附件和图片说明） |
 | `qq_chat/reply.py` | QQ 回复分段与流式发送 |
 | `qq_chat/voice.py` | 独立语音队列、合成进程协议和音频校验 |
@@ -52,8 +53,42 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 | `group_user_blacklist` | 群聊用户 QQ 号列表，默认空；跨群静默忽略，动态拉黑会保存，主人豁免。主人用 `/blacklist` 查看、`/block QQ号` 添加、`/unblock QQ号` 解除 |
 | `show_tool_progress` | 进度中是否推送工具调用摘要，默认 `false` |
 | `voice` | 可选本地语音回复，默认关闭；启用后正常回复先发文字，再补对应语音。配置见 `docs/VOICE.md` |
+| `agents` | 可选单 agent profile 配置；省略保持 Codex，PR2 只允许空 back 列表；Codex profile 省略 path 时继承 codex_path |
 
 不论哪种群设置，群聊都需要 @ 机器人或喊触发词才会回复。
+
+## Claude 单 agent 配置
+
+本机已验证 Claude Code 2.1.311；需先用官方 `claude auth login` 登录，不把凭据写入桥接配置。以下是 `agents` 字段示例，路径按本机修改：
+
+```json
+"agents": {
+  "front": "claude",
+  "guest": "claude-chat",
+  "back": [],
+  "profiles": {
+    "claude": {
+      "type": "claude_code",
+      "path": "/home/<user>/.local/bin/claude",
+      "model": "sonnet",
+      "models": ["haiku", "sonnet", "opus"],
+      "permission_mode": "dontAsk",
+      "max_turns": 6
+    },
+    "claude-chat": {
+      "type": "claude_code",
+      "path": "/home/<user>/.local/bin/claude",
+      "model": "haiku",
+      "models": ["haiku"],
+      "max_turns": 2
+    }
+  }
+}
+```
+
+主人前台为 FULL，必须显式设置权限模式；`dontAsk` 会拒绝需要额外许可的操作，不能保证所有编码工具请求都能执行。访客无论 profile 怎么配置都为 NONE，safe-mode、禁用 CLAUDE.md/自动记忆及空工具校验共同生效，不取得主人的权限。FULL 不启用这些隔离开关，正常读取项目规则。
+
+Claude 回复完整校验后才按气泡发出，因此没有即时首字；Codex 流式保留。`/models` 对 Claude 读取配置目录，model 项也可用对象形式声明 `defaultReasoningEffort` 和 `supportedReasoningEfforts`；未声明档位时 `/effort` 不允许切换，不从 CLI 通用列表推断模型支持情况。新 profile 不继承其他 profile 的模型名。更多边界见 `docs/FRONT-BACK.md` 和 `docs/ARCHITECTURE.md`。
 
 ## 常用操作
 
@@ -95,7 +130,7 @@ python3 tools/restart_bridge.py
 - `/model 模型名`：校验可选列表并保存当前会话选择，下一条消息生效，保留聊天记录。
 - `/model default`：解析并切换到 Codex 当前配置的默认模型。
 
-模型选择保存在 `chat.sqlite3` 的 `conversation_models` 表；重启和 `/new` 后保留，只影响当前主人会话。群友和私聊白名单访客不能查询或切换模型。切换时采用该模型目录中给出的默认推理强度，不修改全局 Codex 配置。若默认模型不在可选目录中，命令会拒绝切换。
+模型选择按会话及 profile 保存在 `chat.sqlite3` 的 `profile_models` 表，旧 Codex 的 `conversation_models` 表保留兼容；重启和 `/new` 后保留，只影响当前主人会话。群友和私聊白名单访客不能查询或切换模型。切换时采用该模型目录中给出的默认推理强度，不修改全局 Codex 配置。若默认模型不在可选目录中，命令会拒绝切换。
 
 ## 版本管理
 
@@ -109,7 +144,7 @@ python3 tools/restart_bridge.py
 
 ### 会话推理强度（仅主人）
 
-`/effort` 查询当前模型、强度和支持档位；`/effort 档位` 设置；`/effort default` 恢复当前模型目录默认强度。按实时模型目录校验，不支持的档位或查询失败不更改原设置。沿用 `conversation_models` 保存，下一条消息生效，重启和 `/new` 保留，只影响当前主人会话。未选择模型时首次设置会固定当前会话模型；再次 `/model` 切换会重置为所选模型默认强度。
+`/effort` 查询当前模型、强度和支持档位；`/effort 档位` 设置；`/effort default` 恢复当前模型目录默认强度。Codex 按实时目录、Claude 按配置目录校验，不支持的档位或查询失败不更改原设置。按会话和 profile 存入 `profile_models`，旧 Codex 表保留兼容，下一条消息生效，重启和 `/new` 保留，只影响当前主人会话。未选择模型时首次设置会固定当前会话模型；再次 `/model` 切换会重置为所选模型默认强度。
 
 ## 工作台设定加载
 

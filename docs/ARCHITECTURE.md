@@ -4,7 +4,7 @@
 
 ## 总览
 
-一个 asyncio 进程，用 WebSocket 连接 NapCat（OneBot 11），用 Unix socket 连接本机共享的 Codex App Server 守护进程。
+一个 asyncio 进程，用 WebSocket 连接 NapCat（OneBot 11），默认用 Unix socket 连接本机共享的 Codex App Server；也可按 profile 使用 Claude Code 子进程。
 
 ```
 NapCat ──WebSocket──▶ Bridge.session()  事件分发、过滤、去重、记录群聊
@@ -15,9 +15,9 @@ NapCat ──WebSocket──▶ Bridge.session()  事件分发、过滤、去重
                          ▼
                       Bridge.chat()
                          ├ instructions()  prompts.py + workspace/SOUL.md + workspace/OWNER.md
-                         ├ agent.prepare() 恢复或新建 Codex 线程
+                         ├ agent.prepare() 恢复或新建会话
                          ├ turn_text()     拼接旧历史、群聊上下文
-                         └ run_turn()      agent.run(TurnRequest) → AppServer.turn()
+                         └ run_turn()      agent.run(TurnRequest) → Codex AppServer / Claude JSONL
                                ├ 进度 → relay_progress() ─┐
                                └ 回复 → relay_answer()  ──┤（BubbleStream 切分）
                                                           ▼
@@ -36,7 +36,10 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔随机 2～3 �
 | `codex_app.py` | `AppServer`：JSON-RPC 客户端、单轮对话事件处理；`progress_text` 生成进度文本 | 无 |
 | `agents/base.py` | `Agent`、`TurnRequest`、角色/权限常量和返回值上限；不负责 QQ 策略 | 无 |
 | `agents/codex.py` | `CodexAgent`：线程准备/恢复、状态查询、归档、模型目录与底层 turn 调用 | `agents.base`、`codex_app`、`models` |
-| `agents/__init__.py` | `build_agents(cfg, db, cwd)`，目前仅构建原有单 Codex 模式 | `agents.codex` |
+| `agents/__init__.py` | 构建 Codex/Claude profile，Codex profile 共用 transport | `agents.codex`、`agents.claude`、`agents.config` |
+| `agents/claude.py` | Claude JSONL、NONE/FULL 启动、工具列表检查、回复校验、进程清理 | `agents.base` |
+| `agents/config.py` | profile 引用、权限模式、模型目录及阶段范围校验 | 无 |
+| `agents/state.py` | 模型偏好迁移与隔离、历史导入预算 | 无 |
 | `prompts.py` | 发给模型的全部提示词与拼接函数 | 无 |
 | `reply.py` | `BubbleStream`：把流式回复切成 QQ 气泡 | 无 |
 | `files.py` | 安全保存附件（不跟随符号链接、限制大小、不覆盖） | 无 |
@@ -95,7 +98,10 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔随机 2～3 �
 | --- | --- |
 | `seen` | 已处理的消息 ID，保留 7 天 |
 | `threads` | 会话键 → Codex 线程 ID |
-| `conversation_models` | 会话键 → 用户选择的模型和该模型默认推理强度，重启及 `/new` 时保留 |
+| `conversation_models` | 旧 Codex 偏好的兼容表，迁移后仍同步默认 Codex 的选择 |
+| `profile_models` | 会话键 + profile → 模型及强度；Claude 不读取 Codex 偏好 |
+| `agent_sessions` / `old_agent_sessions` | 非旧默认 Codex 的会话映射和 `/new` 归档，按 profile 隔离 |
+| `agent_metadata` / `agent_profile_types` | 固定旧 Codex 迁移身份并记录 profile 类型，防止配置切换后误迁移或复用异类会话 |
 | `old_threads` | `/new` 归档的旧映射 |
 | `bootstrap` | 已导入过旧历史的线程 |
 | `history` | 每轮的问答记录；现在只用于新线程导入（遗留） |
@@ -112,13 +118,21 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔随机 2～3 �
 
 ## 常见改动
 
-PR1 的边界：`Bridge.agents['codex']` 持有当前 agent，`Bridge.agent` 是其便捷入口；Bridge 不再依赖 `self.app`。`TurnRequest` 的 `role=CHAT`、`level=FULL/NONE`、人设全文和模型选择由 Bridge 组装。先 `prepare(req)` 得到线程，再拼接旧历史与群聊上下文，最后通过 `run(req)` 执行。请求额外包含 `session_id`（已准备的线程）和 `show_tools`（沿用进度显示开关），避免 run 再次恢复线程或重复读取人设。
+当前边界：`Bridge.agents` 持有各 profile，`Bridge.agent` 是主人前台便捷入口，`agent_for(source)` 按真实身份选择前台或访客 profile；Bridge 不再依赖 `self.app`。`TurnRequest` 的 `role=CHAT`、`level=FULL/NONE`、人设全文和模型选择由 Bridge 组装。先 `prepare(req)` 得到线程，再拼接旧历史与群聊上下文，最后通过 `run(req)` 执行。请求额外包含 `session_id`（已准备的线程）和 `show_tools`（沿用进度显示开关），避免 run 再次恢复线程或重复读取人设。
 
-`session_id(key)` 只查已有映射，供 `/session` 使用；`model_state(thread)` 提供接口返回的实际模型与强度；`models()` 和 `default_model()` 封装原模型目录及临时线程解析。`reset(key)` 仅在当前数据库事务中归档、移除线程映射，Bridge 继续清除 history 并统一提交，模型选择不清除。适配器借用 Bridge 的数据库，不负责关闭它。
+`session_id(key)` 只查已有映射，供 `/session` 使用；`model_state(thread)` 提供接口返回的实际模型与强度；`models()` 和 `default_model()` 封装原模型目录及临时线程解析。`reset(key)` 仅在当前数据库事务中归档、移除当前 profile 的会话映射，Bridge 继续清除 history 并统一提交，模型选择不清除。适配器借用 Bridge 的数据库，不负责关闭它。
 
-本阶段不建新数据库表、不启用 profile 配置或任务调度；`build_agents` 对显式 `agents` 配置报未实现，后续阶段再接入。`AppServer.turn()` 继续处理事件、流式前缀一致性和原异常语义，将完整回复交给适配器；`CodexAgent.run()` 在返回时执行 `MAX_REPLY=12000` 截断，不截断回调流。显式 `interrupt()` 预留接口但尚未实现，原取消/异常路径里的 `turn/interrupt` 仍保留原语义。
+PR2 启用单 agent profile 配置，`back` 必须为空；不增加后台调度和工具通道。`AppServer.turn()` 的事件处理、前缀一致性及异常语义保留，Codex 返回上限仍在适配器。新会话历史统一由 `recent_history()` 从最近 20 条向前取，每条截到 1000 字，JSON 序列化后不超过 8000 字，再恢复时间顺序；数据库原记录不截断。
 
-模型管理由 `Bridge.model_command()` 执行，worker 先检查主人权限，处理函数再次检查。命令验证 agent 返回的目录后保存选择；`CodexAgent.prepare()` 在创建/恢复时传入选择，`run_turn()` 还会通过请求在每次 `turn/start` 明确传入所选模型及推理强度，避免已加载线程忽略恢复覆盖。适配器仅缓存接口返回的实际模型状态，未设置偏好时用于显示；已设置时显示下一轮使用的型号，不把尚未生成的选择冒充为已完成的切换。空线程可能尚无 rollout，遇到该特定错误时重建映射，历史表不清空。
+Claude NONE 在桥接的 `run/claude/<profile>/` 空目录运行，safe-mode 加两个禁用记忆变量，不携带 MCP；FULL 使用实际 workspace 工作目录，正常加载项目规则，不添加隔离开关。人设写入 600 权限临时提示文件，NONE 替换系统提示、FULL 追加；每轮 snapshot=off，结束删除文件。子进程以新进程组启动，stdout 上限 16 MiB、stderr 并行排空，异常或取消依次 SIGINT/SIGTERM/KILL 清理；同一会话由适配器锁串行运行。PR3 的显式停止和重启恢复不在本阶段启用。
+
+Claude 工具列表未校验通过前不接受回复；完整聚合顶层 assistant 文本，忽略子 agent 文本和 thinking，检查 `<invoke` / `<system-reminder` 等标记后才回放到气泡回调。`result` 失败、缺失、异常退出或可疑标记均不发缓冲文字。`TurnRequest.history_text` 承载验证后的全文，Bridge 仅为主人正常成功回复暂存该值、在 worker 落库时取出；访客仍保存实际发送的受限文本。模型返回值上限与全文历史是两个不同用途。
+
+`agent_sessions` 在 prepare 时持久化 UUID；CLI 明确表示找不到该会话且没有初始化执行时，抛 `MissingSession`，Bridge 只重试一次：归档旧映射、分配新会话、重新导入预算内历史。其他错误不自动重试，防止重复执行工具。
+
+启动时把旧模型记录幂等复制到固定的 Codex profile。该身份写入 agent_metadata 后不因更换 front 改变；同一个 profile 名禁止更换后端类型，需使用新名字，避免复用旧会话或偏好。旧表保留并同步默认 Codex 写入，其他 profile 不回写旧表。
+
+模型管理由 `Bridge.model_command()` 执行，worker 先检查主人权限，处理函数再次检查。命令验证 agent 返回的目录后保存选择；`CodexAgent.prepare()` 在创建/恢复时传入选择，`run_turn()` 还会通过请求在每次 `turn/start` 明确传入所选模型及推理强度，避免已加载线程忽略恢复覆盖。Codex 适配器缓存接口返回的实际模型状态；Claude 在首次 init 前仅有配置别名，之后缓存实际返回型号，未设置偏好时用于显示；已设置时显示下一轮使用的型号，不把尚未生成的选择冒充为已完成的切换。空线程可能尚无 rollout，遇到该特定错误时重建映射，历史表不清空。
 
 - **加一个命令**：在 `worker()` 的 if/elif 中加一个分支。默认只有主人可用；如果要对所有人开放，把命令加进开头的白名单元组 `('/ping', '/help')`。同时在 `/help` 文字和 `docs/FEATURES.md` 的命令表里补上，并在 `tests/test_command_auth.py` 加测试。
 - **改提示词**：改 `prompts.py`。桥接注入的人设放入 `workspace/SOUL.md`，主人资料放入 `workspace/OWNER.md`；开发规则留在 Codex 原生加载的 `workspace/AGENTS.md`。文件不自动迁移，均属本地忽略文件。
@@ -146,4 +160,4 @@ python3 -m unittest discover -s tests -v
 
 ### 会话推理强度（仅主人）
 
-`/effort` 查询当前模型、强度和支持档位；`/effort 档位` 设置；`/effort default` 恢复当前模型目录默认强度。按实时模型目录校验，不支持的档位或查询失败不更改原设置。沿用 `conversation_models` 保存，下一条消息生效，重启和 `/new` 保留，只影响当前主人会话。未选择模型时首次设置会固定当前会话模型；再次 `/model` 切换会重置为所选模型默认强度。
+`/effort` 查询当前模型、强度和支持档位；`/effort 档位` 设置；`/effort default` 恢复当前模型目录默认强度。Codex 按实时目录、Claude 按配置目录校验，不支持的档位或查询失败不更改原设置。按会话和 profile 存入 `profile_models`，旧 Codex 表保留兼容，下一条消息生效，重启和 `/new` 保留，只影响当前主人会话。未选择模型时首次设置会固定当前会话模型；再次 `/model` 切换会重置为所选模型默认强度。

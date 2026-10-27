@@ -21,9 +21,12 @@ v4：已按 2026-10-27 的三轮代码审阅意见修订，改动对照见第 14
 - 仅追加 `--safe-mode` 后，在相同 canary 存在时模型未返回 canary，显式 `--system-prompt-file` 仍生效，工具列表为空，订阅调用成功，单次端到端约 8.18 秒。
 - 主人确认：NONE 使用 `--safe-mode`，并设置 `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`、`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`；保留空工具校验，补测 `--resume` 第二轮。FULL 保持正常加载规则，不应用上述隔离开关。
 - 主人提供的云端复验：FRONT 启用 `--safe-mode` 会连显式 `--mcp-config` 也关闭，工具列表为空；提示中出现派发工具名时，模型可能伪造调用及结果。FRONT 不用 safe-mode，只用两个环境变量隔离记忆，并在 PR4 前实测 hooks、插件和 skills。必要时使用独立 `CLAUDE_CONFIG_DIR`，由主人通过官方 `claude auth login` 单独登录，不复制凭据。
-- 本轮尚未完成续接/提示热更新、MCP shim、图片和中断实测，不据此标记 PR2 完成；尚未写实现代码、合并或重启。
+- NONE 加两个环境变量的两轮本机复验通过：首轮约 8.60 秒，resume 第二轮约 7.89 秒，均未读出 canary，第二轮保留上一轮公开测试词，更换系统提示即时生效。实际适配器新建/跨对象续接也通过，临时提示文件均清理。
+- FULL 的合成项目 CLAUDE.md 指令被正常加载；合成 PNG 输入返回成功；取消中的子进程实际退出，运行登记与提示文件清理完成。明确不存在的 resume 会话能被识别。没有修改或发送真实 QQ 会话内容。
+- 两个环境变量、不加 safe-mode 的合成 MCP 探针：init 工具集合仅含一个测试工具，发生一次真实 tools/call，返回成功；全轮约 8.59 秒。没有创建真实任务，也没有向 QQ 发送派发回执。这不等于已隔离 FRONT 的 hooks/插件/skills，该项仍须 PR4 前专项检查。
+- 另一次原始 CLI 计时：init 约 5.21 秒、首段文本约 6.48 秒、全轮约 7.69 秒，均是单次本机样本。实际桥接为完整校验缓冲，Claude 首个气泡要等全轮完成。本机未做启用 Chrome 的对照，不据此删除 --no-chrome。
 
-### 已实测（Claude Code 2.1.311，云端 Linux 容器，haiku；尚未在 WSL 复验，PR2 第一步复验）
+### 已实测（Claude Code 2.1.311，云端 Linux 容器，haiku；本机结果见上一小节）
 
 - 用 `--tools ""` 关掉全部内置工具，再挂一个自己写的 MCP 服务器（附录 A），前台能正确调用 `dispatch_task`，`goal` 写得完整，`result` 只包含最终那段话。
 - `--session-id <uuid>` 新建会话、`--resume <uuid>` 续接，都能接上上下文。`--setting-sources project` 下订阅登录照常可用。
@@ -170,7 +173,7 @@ level 和“是不是主人”也是两回事：回报轮次属于主人会话�
 
 ### 4.3 ClaudeCodeAgent（参数已实测）
 
-每轮启动一个 `claude -p` 进程，写入一条 stream-json 用户消息后关闭 stdin，再读 stdout 直到 `result`。冷启动只有不到 1 秒，先不做常驻进程；需要时再改成长驻并保持 stdin 打开，接口不用变。
+每轮启动一个 `claude -p` 进程，写入一条 stream-json 用户消息后关闭 stdin，再读 stdout 直到 `result`。云端冷启动不到 1 秒，本机单次 init 约 5.21 秒，具体计时见第 0 节；先不做常驻进程，需要时再单独优化，接口保持可替换。
 
 ```python
 BASE_ARGS = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json',
@@ -196,7 +199,7 @@ def level_args(level, grant, profile):
 
 def user_message(text, images):
     content = [{'type': 'text', 'text': text}]
-    for path, media_type in images:          # 图片块格式来自官方文档，尚未实测
+    for path, media_type in images:          # PNG本机实测通过；实现按文件头识别MIME
         content.append({'type': 'image', 'source': {'type': 'base64', 'media_type': media_type,
                         'data': base64.b64encode(path.read_bytes()).decode()}})
     return {'type': 'user', 'message': {'role': 'user', 'content': content}}
@@ -209,22 +212,22 @@ def user_message(text, images):
 - PR4 的下发回执由桥接负责：tool_server 真正建好任务后，桥接直接向发起会话发送固定格式，例如“【已下发任务 #12 · codex】修复 README 错别字”，不经过模型。主人以这条回执确认派发，前台话语不能替代回执。PR2 仅落实文本校验与缓冲，不提前实现派发。
 
 
-1. **会话 ID**：首轮由桥接生成 `uuid4`，先写入 `agent_sessions`，再用 `--session-id` 启动；之后用 `--resume`。续接失败（会话文件丢失）时清掉映射重开，同现在处理 `no rollout found` 的方式一样。
+1. **会话 ID**：首轮由桥接生成 `uuid4`，先写入 `agent_sessions`，再用 `--session-id` 启动；之后用 `--resume`。CLI 在初始化执行前明确表示找不到会话时，由 Bridge 归档映射、重建一次，并重新组装预算内历史；其他错误不重试，避免重复执行。
 2. **系统提示**：怎么写看 level，写什么看 role（4.1）。NONE 和 FRONT 没有内置工具，用 `--system-prompt-file` 整个替换默认提示，提示更短，也没有“我是 Claude Code”的身份。FULL 要用工具，不管是单 agent 的主人对话还是后台任务，都用 `--append-system-prompt-file` 追加，保留 Claude Code 自带的工具用法说明。提示文件写在 `run/` 下，权限 600。**不要用 `--system-prompt` 直接传文字**：命令行参数在 `ps` 里所有本机用户都能看到，而 OWNER.md 里有个人资料。
-3. **工作目录**：用桥接专用的空目录（如 `run/front/`）。不加 `--bare` 时，`-p` 会执行 cwd 里 `.claude/settings.json` 的 hooks，连接 `.mcp.json`，而且没有信任提示。所以前台不能用 `workspace/` 或任何仓库当 cwd。
+3. **工作目录**：NONE/FRONT 用桥接专用空目录（实现为 `run/claude/<profile>/`），不能用 workspace 或任何仓库作为 cwd。FULL 正常使用执行 workspace，保留项目规则加载。即使空 cwd 也不保证隔离用户自定义项；NONE 使用 safe-mode，FRONT 在 PR4 前按第 13 节专项检查。
 4. **子进程**：`asyncio.create_subprocess_exec(..., limit=16 * 1024 * 1024, start_new_session=True)`。默认 64KB 的行长上限遇到大段工具结果会报错。后台任务的进程一启动就记录身份，写进 `tasks.runtime_ref`：pid、pgid、`/proc/<pid>/stat` 里的启动时间、`/proc/sys/kernel/random/boot_id`、`/proc/<pid>/cgroup`，以及通过环境变量传入的一次性随机串 `QQ_TASK_NONCE`。重启善后靠这些判断进程归属（6.2）。
 5. **事件处理**：
 
    | 事件 | 处理 |
    | --- | --- |
    | `system` / `init` | 用 `level_args` 返回的函数校验 `tools`：NONE 必须为空，FRONT 必须正好等于 `FRONT_TOOLS`（缺少或多出均失败），FULL 不能含 `mcp__qq__*`。不通过就发 SIGINT 并抛 `UnexpectedTools`（fail closed） |
-   | `stream_event`，`content_block_delta` 且 `delta.type == 'text_delta'` | `on_answer(delta.text)`，只取 `parent_tool_use_id` 为空的事件 |
+   | `stream_event`，`content_block_delta` 且 `delta.type == 'text_delta'` | 缓冲顶层文本，不立即发送；只取 `parent_tool_use_id` 为空的事件 |
    | `stream_event`，`content_block_start` 且块类型为 `tool_use` | 可选：`on_progress('⏳ 派发任务')` 之类 |
    | `assistant` 中的 `thinking` 块 | 忽略 |
    | `rate_limit_event` | 写日志；接近上限时可以提醒主人 |
-   | `result` | `is_error` 为真或 `subtype != 'success'` 时抛异常；否则返回 `result`，`usage` 和 `total_cost_usd` 写日志（和现在记 Codex usage 一样） |
+   | `result` | `is_error` 为真或 `subtype != 'success'` 时抛异常；否则校验并聚合所有顶层 assistant 文本，按返回值上限返回；没有 assistant 文本时才取 `result`。`usage` 和 `total_cost_usd` 写日志（和现在记 Codex usage 一样） |
 
-   `result` 只包含最后一段文字。如果前台先说一句再调工具，流式发出去的文字会比 `result` 多，所以写 `history` 用流式拼出的全文，不要用 Codex 那种“前缀必须一致”的校验。
+   `result` 只包含最后一段文字。如果前台先说一句再调工具，流式发出去的文字会比 `result` 多，所以写 `history` 用经过完整校验的顶层全文，不只保存 `result` 最后一句；不要用 Codex 那种“前缀必须一致”的校验。
 
 6. **中断**：发 SIGINT（官方文档写明这样会结束当前轮）；5 秒内没退出就发 SIGTERM，再不行 kill 整个进程组。结局判定：收到 `subtype == 'success'` 的 `result`，算停止前已完成；我们发过 SIGINT 后，进程以其他结果或没有结果退出，算已确认停止，原始 subtype 和退出码记进 `error`；没发过 SIGINT 却失败，算失败。SIGINT 之后 `result` 具体长什么样，PR2 复验时记录下来，必要时修正这条规则（13 节第 7 条）。
 7. **同一会话不能并发**：同一个 session ID 同时跑两个 `--resume` 会把会话写乱，所以会话锁必不可少（第 7 节）。
@@ -269,7 +272,7 @@ def user_message(text, images):
 - 启动时校验：`front`、`guest` 和 `back` 引用的 profile 必须存在，`type` 必须已知，否则拒绝启动并打印原因。
 - 改了配置用 `tools/restart_bridge.py` 重启。运行时切换（`/front claude`）可以以后再加，写回配置沿用 `moderation.update_blacklist()` 的加锁原子替换方式。
 - 后台 profile 必须显式写 `writes`。Codex 的 `sandbox` 不是 `read-only` 时，`writes` 必须为 true；Claude 的 FULL 工具里有 Bash、Edit 或 Write 时也必须为 true。声明与实际不符就拒绝启动。所有 `writes: true` 的 profile 共用一个全局写锁（`tasks.max_writers`，默认 1），和各自的 `max_parallel` 同时满足才能开工。处于 `orphaned`（重启后无法确认已结束，见 6.2）的写任务同样占着写锁。等以后做了按任务开 git worktree，再放开这个限制。
-- 切换前台以后，新 profile 没有旧对话的上下文。新会话第一轮从 `history` 表带上最近的记录：从新往旧取，最多 20 条、总共 8000 字，单条超过 1000 字截断（`bootstrap` 表按新的 session ID 记录）。注意现在的 `history_import` 导入的是全部历史：PR1 不动它，PR2 改成上面的预算，对所有 profile 一致（包括 Codex 新开的线程，属于行为变化，要写进 CHANGELOG）。
+- 切换前台以后，新 profile 没有旧对话的上下文。新会话第一轮从 `history` 表带上最近的记录：从新往旧取，最多 20 条、总共 8000 字，单条超过 1000 字截断（`bootstrap` 表按新的 session ID 记录）。PR1 的 `history_import` 导入全部历史；PR2 已改成上面的预算，对所有 profile 一致（包括 Codex 新开的线程，属于行为变化，要写进 CHANGELOG）。
 - 模型选择按“会话 + profile”保存（6.1 的 `profile_models`），一个 profile 永远拿不到另一个 profile 的模型名。
 
 同时更新 `config.example.json` 和 README 的配置表。
@@ -448,10 +451,7 @@ Claude Code ──stdio──▶ python3 -m qq_chat.front_tools     （每轮由
 
 PR1（抽接口、不改既有单 Codex 行为）已完成，接口与保留语义见 `ARCHITECTURE.md`，以下为后续阶段。
 
-**PR2：Claude Code 前台（纯聊天，单 agent）**
-- 第一步：在 WSL 上复现 4.3 和附录 A，内容包括 `init.tools`、`--no-chrome` 是否必要、耗时、系统提示快照，以及 13 节的 CLAUDE.md 暗号测试。结果写进第 0 节，和文档不一致的以本机为准。
-- `ClaudeCodeAgent`，支持 NONE 和 FULL 两个级别；`agent_sessions` 表；`profile_models` 表和迁移；历史导入预算（5 节）；`/new` 和 `/model` 适配。
-- 验收：`front: "claude"` 时，主人和访客都能聊；访客 `init.tools` 非空即中止；改 SOUL.md 下一条生效；重启后会话续上；流式回复照常分气泡发送。
+PR2（Claude 单 agent）已完成：本机复验、NONE/FULL 适配、按 profile 的会话与模型存储、历史预算及回复校验见第 0 节和第 14 节。尚未合并部署，需主人确认并在 QQ 验收通过后才进入 PR3。
 
 **PR3：任务与命令（先手动分派）**
 - `tasks.py`、`tasks` 表、`report_task()` 回报状态机、`deliver()` 抽取、会话锁（7 节的范围）、全局写锁、重启恢复（6.2），以及主人命令 `/task <目标>`、`/task release <编号>`、`/tasks`、`/stop [编号|all]`（BACKLOG #6）。
@@ -495,8 +495,8 @@ PR1（抽接口、不改既有单 Codex 行为）已完成，接口与保留语�
 ## 13. 待实测与未决
 
 1. 用户级 CLAUDE.md 隔离：本机已复现原参数会注入 canary；追加 `--safe-mode` 的单轮 canary 检查通过。主人已确认 NONE 使用 safe-mode 加两个环境变量；补验续接，FULL 保持原加载，FRONT 按第 8 条另行验证。
-2. stream-json 输入里的 base64 图片块（格式来自官方文档，未实测）。
-3. WSL 上的冷启动耗时；如果明显变慢，再考虑每个会话一个长驻进程。
+2. stream-json 的合成 PNG 输入本机已验证；其他 MIME 通过组装测试，实际大图、GIF/WebP/JPEG 的视觉效果仍由后续 QQ 验收确认。
+3. 本机单次 init/首字/全轮计时已记第 0 节。是否改为常驻进程是后续性能优化，不在 PR2 中提前实施。
 4. Codex App Server 有没有中途追加消息的接口（决定 `send_to_task` 的实现）；Codex 在分离模式下当前台时，能否通过 `thread/start` 的 `config` 挂 MCP。
 5. 换成 Claude 前台后，人设的表现要重新调：被认真问到“你是不是 AI”时的反应、语气、长度控制都会和 Codex 不同。
 6. 多个写任务同时改同一仓库：目前靠第 5 节的全局写锁（`tasks.max_writers`，默认 1）串行执行，以后按任务开 git worktree 再放开。
@@ -593,7 +593,7 @@ v1 交给 Codex 对照代码审阅后，以下意见全部采纳：
 ### PR2 启动隔离审阅
 
 - 本机发现 `--setting-sources project` 不隔离用户级 CLAUDE.md，空工具列表不等于未加载私人指令。已将可复现结果写进第 0 节及第 13 节第 1 条。
-- 验证了追加 `--safe-mode` 的无工具单轮启动：未读出测试 canary、显式提示生效、订阅可用。建议用此方式隔离 NONE/FRONT；因影响当前 PR2 的启动设计，依执行规则暂停代码实现并汇报，未默认为已获批准。
+- 验证了追加 `--safe-mode` 的无工具单轮启动：未读出测试 canary、显式提示生效、订阅可用。建议用此方式隔离 NONE/FRONT；当时因影响 PR2 先暂停汇报；随后主人明确了下节按级别隔离规则，本轮据此继续实现。
 
 ### 主人确认的前台隔离与真实派发回执
 
@@ -601,3 +601,13 @@ v1 交给 Codex 对照代码审阅后，以下意见全部采纳：
 - FRONT：不用 safe-mode，以保留显式 MCP；只用上述环境变量隔离记忆，工具列表必须完全匹配。PR4 前检查用户 hooks/插件/skills，必要时采用独立配置目录及官方登录。云端行为为主人提供的验证结果，不冒充本机实测。
 - 含调用标记的前台回复整轮拒发；Claude 文本先缓冲校验。PR3 手动提示不出现工具名。
 - PR4 派发回执必须由桥接在工具服务真实建好任务后直接发送，格式固定，模型的“已派发”或任务编号不能作为事实依据。
+
+### PR2 实现记录
+
+- 新增 ClaudeCodeAgent、profile 配置验证和 AgentState；旧配置仍用 Codex，PR2 只接受 back 为空。Codex profile 省略 path 时继承 codex_path，不修改原配置对象。
+- 模型设置按会话/profile 隔离，旧 Codex 表保留兼容；旧 profile 身份持久化后不随 front 切换重新迁移。同名 profile 禁止换后端类型，避免错误复用旧会话。非默认 Codex profile 也使用独立会话映射。
+- Claude NONE 的 safe-mode、两个环境变量及空工具检查均已落实；FULL 不添加隔离开关并使用执行 workspace。FRONT 仍未开放，精确工具集合、环境隔离及真实桥接回执留在 PR4。
+- Claude 输出完整缓冲，校验结果、工具与调用标记后再分气泡，忽略 thinking/子 agent 文本。返回值保留 12000 字上限，主人历史保存校验后的完整顶层文本；访客历史及语音仍使用策略处理后的实际文字。
+- 缺失会话只在 CLI 明确未执行的条件下重建一次；同会话运行串行，取消和超时清理进程组及临时文件。共享访客提示显式保留数学授权、复杂题预算和 QQ 消息格式约束，不依赖 Claude 自动加载 AGENTS。
+- 所有 profile 的新会话历史导入统一限制为最近 20 条、JSON 序列化后 8000 字、单条 1000 字，不删除原始记录。这是 PR2 有意的行为变化。
+- 全量 126 项离线测试通过，包含原有覆盖、FakeAgent、脱敏真实 JSONL、配置/存储隔离及错误路径；语法检查和格式检查通过。本机 CLI 复验见第 0 节。本轮未合并、未修改运行配置、未重启桥接，未开始 PR3。
