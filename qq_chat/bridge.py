@@ -13,6 +13,9 @@ import uuid
 import unicodedata
 from . import prompts
 from .agents import CHAT, FULL, NONE, TurnRequest, build_agents
+from .agents.base import MissingSession
+from .agents.config import legacy_codex_profile, settings
+from .agents.state import AgentState, recent_history
 from .files import MAX_FILE_BYTES, save_attachment
 from .images import MAX_IMAGE_BYTES, save_image
 from .reply import stream_bubbles
@@ -161,11 +164,33 @@ class Bridge:
         self.db.execute("CREATE TABLE IF NOT EXISTS group_context (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER, content TEXT)")
         self.db.execute("CREATE INDEX IF NOT EXISTS group_context_group ON group_context(group_id, id)")
         self.db.commit()
+        _, _, profiles = settings(cfg)
+        self._agent_state = AgentState(self.db, legacy_codex_profile(cfg),
+                                       {name: profile['type'] for name, profile in profiles.items()})
         self.agents = build_agents(cfg, self.db, BASE / "workspace")
+        self._history_replies = {}
 
     @property
     def agent(self):
-        return self.agents["codex"]
+        return self.agents[self.cfg.get('agents', {}).get('front', 'codex')]
+
+    def agent_for(self, source):
+        config = self.cfg.get('agents', {})
+        front = config.get('front', 'codex')
+        name = front if owner_request(source, self.cfg['owner_qq']) else config.get('guest', front)
+        return self.agents[name]
+
+    @property
+    def state(self):
+        if '_agent_state' not in self.__dict__:
+            self._agent_state = AgentState(self.db, legacy_codex_profile(self.cfg))
+        return self._agent_state
+
+    def selection(self, source):
+        return self.state.selection(self.conversation(source), self.agent_for(source).name)
+
+    def save_selection(self, source, model, effort):
+        self.state.save(self.conversation(source), self.agent_for(source).name, model, effort)
 
     def remember_group(self, source, text):
         cursor = self.db.execute("INSERT INTO group_context (group_id, content) VALUES (?, ?)",
@@ -311,17 +336,17 @@ class Bridge:
         return prompts.instructions(authorized, rules, group_moderation=group_moderation)
 
     async def turn_request(self, source, authorized, text=''):
-        selection = self.db.execute('SELECT model, effort FROM conversation_models WHERE conversation=?',
-                                    (self.conversation(source),)).fetchone()
+        selection = self.selection(source)
+        profile = getattr(self.agent_for(source), 'profile', {})
         return TurnRequest(
             key=self.conversation(source), text=text, role=CHAT,
             level=FULL if authorized else NONE,
             instructions=await self.instructions(authorized, group_moderation=source.kind == 'group'),
-            model=selection[0] if selection else None,
-            effort=selection[1] if selection else None)
+            model=selection[0] if selection else profile.get('model'),
+            effort=selection[1] if selection else profile.get('effort'))
 
     async def thread_for(self, source, authorized):
-        return await self.agent.prepare(await self.turn_request(source, authorized))
+        return await self.agent_for(source).prepare(await self.turn_request(source, authorized))
 
     async def effort_command(self, source, text):
         if not owner_request(source, self.cfg['owner_qq']):
@@ -331,8 +356,7 @@ class Bridge:
         if len(parts) not in (1, 2) or parts[0] != '/effort':
             await self.send(source, '用法：/effort 查看当前设置与可选档位；/effort 档位 切换；/effort default 恢复模型默认强度。')
             return
-        conversation = self.conversation(source)
-        selection = self.db.execute('SELECT model, effort FROM conversation_models WHERE conversation=?', (conversation,)).fetchone()
+        selection = self.selection(source)
         if selection:
             name, current = selection
         else:
@@ -350,14 +374,7 @@ class Bridge:
         if not name or target not in levels:
             await self.send(source, '该模型不支持这个强度，或接口未提供可校验的档位。请用 /effort 查看；原设置未改变。')
             return
-        try:
-            self.db.execute('INSERT INTO conversation_models VALUES (?, ?, ?) '
-                            'ON CONFLICT(conversation) DO UPDATE SET model=excluded.model, effort=excluded.effort',
-                            (conversation, name, target))
-            self.db.commit()
-        except Exception:
-            self.db.rollback()
-            raise
+        self.save_selection(source, name, target)
         await self.send(source, '当前会话 effort 已设为 ' + target + '，下一条消息生效，模型和聊天上下文保留。')
 
     async def model_command(self, source, text):
@@ -373,7 +390,7 @@ class Bridge:
             await self.send(source, '可选模型：\n' + '\n'.join(names) if names else '当前没有可选模型。')
             return
         if parts == ['/model']:
-            selection = self.db.execute('SELECT model FROM conversation_models WHERE conversation=?', (self.conversation(source),)).fetchone()
+            selection = self.selection(source)
             if selection:
                 await self.send(source, '当前会话模型设置：' + selection[0] + '，下一轮使用。')
                 return
@@ -390,21 +407,14 @@ class Bridge:
             await self.send(source, '这个模型不在当前可选列表中，请先用 /models 查看。')
             return
         effort = models[name].get('defaultReasoningEffort')
-        try:
-            self.db.execute('INSERT INTO conversation_models VALUES (?, ?, ?) '
-                            'ON CONFLICT(conversation) DO UPDATE SET model=excluded.model, effort=excluded.effort',
-                            (self.conversation(source), name, effort))
-            self.db.commit()
-        except Exception:
-            self.db.rollback()
-            raise
+        self.save_selection(source, name, effort)
         notice = '该模型仅支持文字。' if 'image' not in models[name].get('inputModalities', ['text', 'image']) else ''
         await self.send(source, '当前会话已选择 ' + name + '，下一条消息使用该模型，聊天上下文保留。' + notice)
 
     def turn_text(self, source, thread, text, context_id):
         """Prefix old-bridge history (until the thread is bootstrapped) and recent group context."""
         if not self.db.execute("SELECT 1 FROM bootstrap WHERE thread_id=?", (thread,)).fetchone():
-            history = self.db.execute("SELECT role, content FROM history WHERE conversation=? ORDER BY rowid", (self.conversation(source),)).fetchall()
+            history = recent_history(self.db, self.conversation(source))
             if history:
                 text = prompts.history_import(history, text)
         return self.group_reference(source, context_id) + text
@@ -451,19 +461,20 @@ class Bridge:
 
         reporter = asyncio.create_task(self.relay_progress(source, progress_queue)) if authorized else None
         answer_sender = asyncio.create_task(self.relay_answer(source, answer_queue)) if authorized else None
-        selection = self.db.execute('SELECT model, effort FROM conversation_models WHERE conversation=?', (self.conversation(source),)).fetchone()
+        selection = self.selection(source)
         if request is None:
             request = TurnRequest(self.conversation(source), text, CHAT,
                                   FULL if authorized else NONE, '')
         request.text, request.session_id = text, thread
-        request.model = selection[0] if selection else None
-        request.effort = selection[1] if selection else None
+        profile = getattr(self.agent_for(source), 'profile', {})
+        request.model = selection[0] if selection else profile.get('model')
+        request.effort = selection[1] if selection else profile.get('effort')
         request.on_progress = progress if authorized else None
         request.on_answer = answer_delta if authorized else None
         request.show_tools = bool(self.cfg.get('show_tool_progress', False))
         request.images = tuple(image_paths)
         try:
-            reply = await self.agent.run(request)
+            reply = await self.agent_for(source).run(request)
             if answer_sender:
                 answer_queue.put_nowait(None)
                 await asyncio.wait_for(asyncio.shield(answer_sender), 120)
@@ -486,12 +497,26 @@ class Bridge:
 
     async def chat(self, source, text, context_id=None, image_paths=()):
         authorized = owner_request(source, self.cfg['owner_qq'])
-        request = await self.turn_request(source, authorized)
-        thread = await self.agent.prepare(request)
-        text = self.turn_text(source, thread, text, context_id)
-        reply = await self.run_turn(source, thread, text, authorized, image_paths, request=request)
+        key = self.conversation(source)
+        self.__dict__.setdefault('_history_replies', {}).pop(key, None)
+        agent = self.agent_for(source)
+        for attempt in range(2):
+            request = await self.turn_request(source, authorized)
+            thread = await agent.prepare(request)
+            turn_text = self.turn_text(source, thread, text, context_id)
+            try:
+                reply = await self.run_turn(source, thread, turn_text, authorized, image_paths, request=request)
+                break
+            except MissingSession:
+                if attempt:
+                    raise
+                # The CLI confirms that no prior session ran. Recompose bounded history.
+                await agent.reset(key)
+                self.db.commit()
         self.db.execute("INSERT OR IGNORE INTO bootstrap VALUES (?)", (thread,))
         self.db.commit()
+        if authorized and request.history_text is not None:
+            self._history_replies[key] = request.history_text
         return reply, authorized
 
     async def worker(self):
@@ -539,12 +564,12 @@ class Bridge:
                 if text in ("/ping", "连接测试"):
                     await self.send(source, "QQ 聊天连接正常。")
                 elif text == "/new":
-                    await self.agent.reset(self.conversation(source))
+                    await self.agent_for(source).reset(self.conversation(source))
                     self.db.execute("DELETE FROM history WHERE conversation=?", (self.conversation(source),))
                     self.db.commit()
                     await self.send(source, "已清空聊天上下文，可以开始新话题。")
                 elif text == "/session":
-                    thread = self.agent.session_id(self.conversation(source))
+                    thread = self.agent_for(source).session_id(self.conversation(source))
                     await self.send(source, "当前会话：" + (thread if thread else "尚未创建；发送一条消息即可创建。"))
                 elif text == '/blacklist':
                     users = self.cfg.get('group_user_blacklist', [])
@@ -579,7 +604,7 @@ class Bridge:
                     await self.enqueue_voice(source, reply)
                     self.db.executemany(
                         "INSERT INTO history (role, content, conversation) VALUES (?, ?, ?)",
-                        [("user", text, self.conversation(source)), ("assistant", reply, self.conversation(source))])
+                        [("user", text, self.conversation(source)), ("assistant", getattr(self, '_history_replies', {}).pop(self.conversation(source), reply), self.conversation(source))])
                     self.db.commit()
                     logging.info("Chat reply delivered")
             except Exception as error:
@@ -645,7 +670,8 @@ class Bridge:
             self.ws = None
 
     async def run(self):
-        await self.agent.start()
+        for name in dict.fromkeys(settings(self.cfg)[:2]):
+            await self.agents[name].start()
         logging.info("App Server initialized")
         while True:
             try:

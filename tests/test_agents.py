@@ -116,14 +116,16 @@ class AgentBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(req.on_progress is not None, index < 2)
         self.assertTrue(self.sent)
 
-    async def test_all_legacy_history_is_imported_once(self):
+    async def test_bounded_legacy_history_is_imported_once(self):
         entries = [('user', f'old-{i}-' + 'x' * 1100, 'private:10001') for i in range(24)]
         self.bridge.db.executemany('INSERT INTO history VALUES (?, ?, ?)', entries)
         self.bridge.db.commit()
         await self.bridge.chat(self.owner, 'new-message')
         text = self.fake.requests[-1].text
-        for _, content, _ in entries:
-            self.assertIn(content, text)
+        self.assertNotIn('old-0-', text)
+        self.assertIn('old-23-', text)
+        self.assertNotIn(entries[-1][1], text)
+        self.assertLess(len(text), 8300)
         await self.bridge.chat(self.owner, 'next-message')
         self.assertEqual(self.fake.requests[-1].text, 'next-message')
         self.assertEqual(self.bridge.db.execute('SELECT COUNT(*) FROM history').fetchone()[0], 24)
@@ -224,5 +226,5 @@ class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(list(agents), ['codex'])
         self.assertIsInstance(agents['codex'], Agent)
         self.assertEqual(agents['codex'].app.executable, 'unused')
-        with self.assertRaisesRegex(ValueError, 'not implemented in PR1'):
+        with self.assertRaisesRegex(ValueError, 'profiles must be an object'):
             build_agents({'codex_path': 'unused', 'agents': {'front': 'missing'}}, self.db, '/unused')

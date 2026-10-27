@@ -9,11 +9,12 @@ from .base import Agent, CHAT, FULL, MAX_REPLY, NONE, TurnRequest
 
 
 class CodexAgent(Agent):
-    def __init__(self, db, cwd, executable, *, app=None, name='codex'):
+    def __init__(self, db, cwd, executable, *, app=None, name='codex', profile=None, legacy=True):
         self.name = name
         self.db = db
         self.cwd = Path(cwd)
         self.app = app if app is not None else AppServer(executable)
+        self.profile, self.legacy = dict(profile or {}), legacy
         self._models = {}
         self._efforts = {}
 
@@ -21,7 +22,11 @@ class CodexAgent(Agent):
         await self.app.start()
 
     def session_id(self, key):
-        row = self.db.execute('SELECT thread_id FROM threads WHERE conversation=?', (key,)).fetchone()
+        if self.legacy:
+            row = self.db.execute('SELECT thread_id FROM threads WHERE conversation=?', (key,)).fetchone()
+        else:
+            row = self.db.execute('SELECT session_id FROM agent_sessions WHERE conversation=? AND profile=?',
+                                  (key, self.name)).fetchone()
         return row[0] if row else None
 
     def model_state(self, session_id):
@@ -32,7 +37,7 @@ class CodexAgent(Agent):
         if req.role != CHAT or req.level not in (FULL, NONE):
             raise ValueError('Only legacy Codex chat modes are implemented in PR1')
         options = {'cwd': str(self.cwd), 'approvalPolicy': 'never',
-                   'sandbox': 'danger-full-access' if req.level == FULL else 'read-only',
+                   'sandbox': self.profile.get('sandbox', 'danger-full-access') if req.level == FULL else 'read-only',
                    'developerInstructions': req.instructions}
         await self.start()
         if req.model is not None:
@@ -54,8 +59,12 @@ class CodexAgent(Agent):
                 return thread
         result = await self.app.call('thread/start', {**options, 'ephemeral': False})
         thread = result['thread']['id']
-        self.db.execute('INSERT INTO threads VALUES (?, ?) ON CONFLICT(conversation) '
-                        'DO UPDATE SET thread_id=excluded.thread_id', (req.key, thread))
+        if self.legacy:
+            self.db.execute('INSERT INTO threads VALUES (?, ?) ON CONFLICT(conversation) '
+                            'DO UPDATE SET thread_id=excluded.thread_id', (req.key, thread))
+        else:
+            self.db.execute('INSERT INTO agent_sessions VALUES (?, ?, ?) ON CONFLICT(conversation, profile) '
+                            'DO UPDATE SET session_id=excluded.session_id', (req.key, self.name, thread))
         self.db.commit()
         self._models[thread] = result.get('model')
         self._efforts[thread] = result.get('reasoningEffort')
@@ -71,9 +80,14 @@ class CodexAgent(Agent):
         return reply[:MAX_REPLY]
 
     async def reset(self, key):
-        self.db.execute('INSERT INTO old_threads SELECT conversation, thread_id, ? '
-                        'FROM threads WHERE conversation=?', (time.time(), key))
-        self.db.execute('DELETE FROM threads WHERE conversation=?', (key,))
+        if self.legacy:
+            self.db.execute('INSERT INTO old_threads SELECT conversation, thread_id, ? '
+                            'FROM threads WHERE conversation=?', (time.time(), key))
+            self.db.execute('DELETE FROM threads WHERE conversation=?', (key,))
+        else:
+            self.db.execute('INSERT INTO old_agent_sessions SELECT conversation, profile, session_id, ? '
+                            'FROM agent_sessions WHERE conversation=? AND profile=?', (time.time(), key, self.name))
+            self.db.execute('DELETE FROM agent_sessions WHERE conversation=? AND profile=?', (key, self.name))
 
     async def models(self):
         return list((await available_models(self.app)).values())

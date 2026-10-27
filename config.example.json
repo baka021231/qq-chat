@@ -19,5 +19,15 @@
       "--model-dir",
       "/home/<user>/.local/share/aemeath-voice/model/ONNX_aimisiV2"
     ]
+  },
+  "agents": {
+    "front": "codex",
+    "guest": "codex",
+    "back": [],
+    "profiles": {
+      "codex": {
+        "type": "codex_app"
+      }
+    }
   }
 }

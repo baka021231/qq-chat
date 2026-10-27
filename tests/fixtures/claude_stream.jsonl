@@ -1,0 +1,7 @@
+{"type": "system", "subtype": "init", "tools": [], "model": "test-model"}
+{"type": "stream_event", "parent_tool_use_id": null, "event": {"type": "message_start", "message": {"id": "recorded-message"}}}
+{"type": "stream_event", "parent_tool_use_id": null, "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "PRO"}}}
+{"type": "stream_event", "parent_tool_use_id": null, "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "MPT_2 PA"}}}
+{"type": "stream_event", "parent_tool_use_id": null, "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "PERPLANE"}}}
+{"type": "assistant", "parent_tool_use_id": null, "message": {"id": "recorded-message", "content": [{"type": "text", "text": "PROMPT_2 PAPERPLANE"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "result": "PROMPT_2 PAPERPLANE", "usage": {"input_tokens": 1, "output_tokens": 1}, "total_cost_usd": 0}

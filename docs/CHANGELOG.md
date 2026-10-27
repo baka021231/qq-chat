@@ -2,6 +2,14 @@
 
 ## 2026-10-27
 
+### 前后台分离 PR2 Claude 单 agent 接入
+
+- 新增 Claude JSONL 适配器、profile 配置验证和状态存储，支持主人/访客分别选择 Codex 或 Claude，仍不启动后台任务；旧配置保持单 Codex。
+- NONE 采用 safe-mode 加两个禁用记忆变量，首轮和 resume canary 实测均不泄露；FULL 保持项目规则加载。回复整体缓冲并检查伪调用标记，工具列表或结果校验失败时不发送正文、不写历史、不入语音队列。
+- 模型偏好按会话/profile 迁移与隔离，保留旧 Codex 兼容表；会话可跨重启续接和按 profile 归档。明确缺失的会话仅重建一次，其他失败不重试。
+- 历史导入有意改为所有 profile 统一的最近 20 条、8000 字预算、单条 1000 字；原历史不删除。记录完整的校验后 Claude 顶层回复，排除 thinking 和子 agent 文本。
+- 本机验证项目规则、图片输入、取消清理和无 safe-mode 的合成 MCP 探针；NONE/FRONT 的后续隔离、精确工具集合及桥接派发回执设计同步入 FRONT-BACK，第 14 节注明本机与主人提供的云端验证边界。
+
 ### 前后台分离 PR1 抽取 Agent 接口
 
 - 新增 `qq_chat/agents/`：`Agent`、`TurnRequest`、默认工厂及 `CodexAgent`；Bridge 经接口完成线程准备、运行、模型查询和归档，权限、人设、历史、QQ 流式发送、拉黑和语音仍留在 Bridge。

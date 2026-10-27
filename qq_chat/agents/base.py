@@ -12,6 +12,10 @@ class Interrupted(Exception):
     """Reserved for the explicit interruption semantics introduced in PR3."""
 
 
+class MissingSession(RuntimeError):
+    """Resume failed before execution; Bridge may re-import bounded history once."""
+
+
 @dataclass
 class TurnRequest:
     key: str
@@ -28,6 +32,7 @@ class TurnRequest:
     # Bridge prepares a session before composing its legacy history input.
     session_id: str | None = None
     show_tools: bool = False
+    history_text: str | None = None
 
 
 class Agent(ABC):
@@ -59,7 +64,7 @@ class Agent(ABC):
     async def default_model(self) -> str: ...
 
     async def interrupt(self, key: str) -> bool:
-        raise NotImplementedError('Explicit interruption is not implemented in PR1')
+        raise NotImplementedError('Explicit interruption is not implemented until PR3')
 
     @abstractmethod
     async def close(self): ...
