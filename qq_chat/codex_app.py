@@ -151,7 +151,7 @@ class AppServer:
                         reply = '\n\n'.join(messages.values()).strip()
                         if not reply:
                             raise RuntimeError('Codex returned empty reply')
-                        return reply[:12000]
+                        return reply
         except BaseException:
             if turn_id:
                 with contextlib.suppress(Exception):

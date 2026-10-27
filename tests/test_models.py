@@ -45,7 +45,7 @@ class ModelCommandsTests(unittest.IsolatedAsyncioTestCase):
         self.base_patch.start()
         self.cfg = {'owner_qq': 123, 'codex_path': 'unused'}
         self.bridge = Bridge(self.cfg)
-        self.bridge.app = self.app = FakeApp()
+        self.bridge.agents['codex'].app = self.app = FakeApp()
         self.sent = []
         async def send(source, text):
             self.sent.append(text)
@@ -97,10 +97,10 @@ class ModelCommandsTests(unittest.IsolatedAsyncioTestCase):
     async def test_preference_survives_restart_new_and_other_conversations(self):
         await self.dispatch('/model model-b')
         restarted = Bridge(dict(self.cfg))
-        restarted.app = self.app
+        restarted.agents['codex'].app = self.app
         try:
             thread = await restarted.thread_for(self.owner, True)
-            self.assertEqual(restarted._thread_models[thread], 'model-b')
+            self.assertEqual(restarted.agent.model_state(thread)[0], 'model-b')
         finally:
             restarted.db.close()
         await self.dispatch('/new')

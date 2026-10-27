@@ -422,10 +422,7 @@ Claude Code ──stdio──▶ python3 -m qq_chat.front_tools     （每轮由
 
 每个阶段一个提交或 PR：先跑测试，同一提交里更新 FEATURES/CHANGELOG，部署用 `tools/restart_bridge.py`。
 
-**PR1：抽接口，不改行为**
-- 新增 `qq_chat/agents/`（`base.py`、`codex.py`、`build_agents()`），`thread_for`/`run_turn` 的 Codex 逻辑移入 `CodexAgent`。为 `/model`、`/effort`、`/session` 补上需要的接口（准备线程、查询模型状态）。
-- 权限、人设组装、历史、流式发送、拉黑和语音留在 Bridge。以下语义原样保留：12000 字截断在 CodexAgent 里；`history_import` 仍导入全部历史；`conversation_models` 表和空线程的恢复处理不变。
-- 验收：现有测试全部通过（测试里替换 `bridge.app` 的写法，改成替换 `bridge.agents['codex']` 或保留 `app` 属性作兼容）；不加 `agents` 配置时行为一致；`self.app` 只在 `CodexAgent` 和模型目录里出现。
+PR1（抽接口、不改既有单 Codex 行为）已完成，接口与保留语义见 `ARCHITECTURE.md`，以下为后续阶段。
 
 **PR2：Claude Code 前台（纯聊天，单 agent）**
 - 第一步：在 WSL 上复现 4.3 和附录 A，内容包括 `init.tools`、`--no-chrome` 是否必要、耗时、系统提示快照，以及 13 节的 CLAUDE.md 暗号测试。结果写进第 0 节，和文档不一致的以本机为准。
@@ -523,6 +520,14 @@ for line in sys.stdin:
 `-I` 隔离模式不读 `PYTHONPATH`、不把当前目录加入导入路径，所以 shim 要按绝对路径运行，并且只用标准库、不写包内相对导入。`command` 用 `sys.executable`，保证和桥接是同一个 Python。
 
 ## 14. 审阅修订记录（2026-10-27）
+
+### PR1 实现记录
+
+- 已完成 `Agent` / `TurnRequest`、默认构建工厂和 `CodexAgent`；Bridge 经接口准备线程、运行、查询模型状态和归档。为保持旧历史先拼接、再执行的顺序，请求增加已准备的 `session_id` 和原 `show_tool_progress` 对应的 `show_tools`。
+- 本阶段仅构建旧配置的单 Codex 模式，不提前启用 profile、Claude、任务并发或显式中断；传入尚未实现的 `agents` 配置会明确报错。
+- 12000 字上限移至适配器返回值，回调全文不截断；全部历史导入、原数据库表、模型/强度持久化、空线程恢复和非 completed 状态异常处理均保留。
+- 归档接口不单独提交数据库事务，Bridge 清除 history 后统一提交，保留 `/new` 的原事务边界。
+- 原 90 项测试通过；新增 9 项 FakeAgent 与适配器回归检查，总计 99 项通过。FEATURES、ARCHITECTURE、CHANGELOG 同步更新；未重启部署。
 
 ### 第一轮（v2）
 

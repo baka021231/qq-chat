@@ -9,6 +9,7 @@ import tempfile
 from unittest.mock import patch
 
 from qq_chat.bridge import Bridge, Incoming, Source
+from qq_chat.agents.codex import CodexAgent
 
 
 class CommandAuthTests(unittest.IsolatedAsyncioTestCase):
@@ -27,6 +28,7 @@ class CommandAuthTests(unittest.IsolatedAsyncioTestCase):
             self.bridge.db.execute('INSERT INTO threads VALUES (?, ?)', (conversation, 'id-' + conversation))
             self.bridge.db.execute('INSERT INTO history VALUES (?, ?, ?)', ('user', 'keep', conversation))
         self.bridge.db.commit()
+        self.bridge.agents = {'codex': CodexAgent(self.bridge.db, Path.cwd() / 'workspace', 'unused')}
         self.sent = []
 
         async def send(source, text):
