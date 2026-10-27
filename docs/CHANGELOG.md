@@ -2,6 +2,12 @@
 
 ## 2026-10-27
 
+### 前后台分离 PR1 抽取 Agent 接口
+
+- 新增 `qq_chat/agents/`：`Agent`、`TurnRequest`、默认工厂及 `CodexAgent`；Bridge 经接口完成线程准备、运行、模型查询和归档，权限、人设、历史、QQ 流式发送、拉黑和语音仍留在 Bridge。
+- 保留 `threads`、`conversation_models`、`bootstrap` 与空线程恢复逻辑，历史仍全部导入；12000 字返回值截断移至 CodexAgent，流式全文和非 completed 状态的原异常语义不变。
+- 旧配置默认单 Codex，不增加 Claude、MCP、并发或停止命令；显式 `agents` 配置暂报未实现。新增 FakeAgent 和适配器回归测试，既有测试仅调整注入入口及状态查询断言。
+
 ### 发布三条原参考句复刻样本
 
 - 在 `samples/voice/2026-10-27-resynth/` 发布 `resynth-7.wav`、`resynth-9.wav`、`resynth-1.wav`，分别长 5.60、4.56、3.96 秒，均使用 CUDA 与同一原参考音频。

@@ -12,12 +12,11 @@ import time
 import uuid
 import unicodedata
 from . import prompts
-from .codex_app import AppServer
+from .agents import CHAT, FULL, NONE, TurnRequest, build_agents
 from .files import MAX_FILE_BYTES, save_attachment
 from .images import MAX_IMAGE_BYTES, save_image
 from .reply import stream_bubbles
 from .moderation import BLOCK_SENDER, blocked_group_sender, bounded_guest_reply, obvious_abuse, update_blacklist
-from .models import available_models, configured_default
 from .voice import ProcessSynthesizer, VoiceReplies, validate_wav
 
 from websockets.asyncio.client import connect
@@ -138,7 +137,6 @@ class Bridge:
     def __init__(self, cfg):
         self.cfg = cfg
         self.ws = None
-        self.app = AppServer(cfg["codex_path"])
         self.pending = {}
         self.send_lock = asyncio.Lock()
         self.last_send = 0.0
@@ -163,6 +161,11 @@ class Bridge:
         self.db.execute("CREATE TABLE IF NOT EXISTS group_context (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER, content TEXT)")
         self.db.execute("CREATE INDEX IF NOT EXISTS group_context_group ON group_context(group_id, id)")
         self.db.commit()
+        self.agents = build_agents(cfg, self.db, BASE / "workspace")
+
+    @property
+    def agent(self):
+        return self.agents["codex"]
 
     def remember_group(self, source, text):
         cursor = self.db.execute("INSERT INTO group_context (group_id, content) VALUES (?, ?)",
@@ -307,39 +310,18 @@ class Bridge:
         rules = '\n\n'.join(sections) if sections else None
         return prompts.instructions(authorized, rules, group_moderation=group_moderation)
 
+    async def turn_request(self, source, authorized, text=''):
+        selection = self.db.execute('SELECT model, effort FROM conversation_models WHERE conversation=?',
+                                    (self.conversation(source),)).fetchone()
+        return TurnRequest(
+            key=self.conversation(source), text=text, role=CHAT,
+            level=FULL if authorized else NONE,
+            instructions=await self.instructions(authorized, group_moderation=source.kind == 'group'),
+            model=selection[0] if selection else None,
+            effort=selection[1] if selection else None)
+
     async def thread_for(self, source, authorized):
-        """Resume the conversation's Codex thread, or start one, under this turn's permissions."""
-        options = {"cwd": str(BASE / "workspace"), "approvalPolicy": "never",
-                   "sandbox": "danger-full-access" if authorized else "read-only",
-                   "developerInstructions": await self.instructions(authorized, group_moderation=source.kind == 'group')}
-        await self.app.start()
-        conversation = self.conversation(source)
-        selection = self.db.execute('SELECT model, effort FROM conversation_models WHERE conversation=?', (conversation,)).fetchone()
-        if selection:
-            options['model'] = selection[0]
-            if selection[1] is not None:
-                options['config'] = {'model_reasoning_effort': selection[1]}
-        row = self.db.execute("SELECT thread_id FROM threads WHERE conversation=?", (conversation,)).fetchone()
-        if row:
-            try:
-                result = await self.app.call("thread/resume", {"threadId": row[0], **options})
-            except RuntimeError as error:
-                if 'no rollout found for thread id' not in str(error):
-                    raise
-                # Threads created by /model before the first actual turn have no rollout.
-                with contextlib.suppress(Exception):
-                    await self.app.call('thread/unsubscribe', {'threadId': row[0]})
-            else:
-                self.__dict__.setdefault('_thread_models', {})[row[0]] = result.get('model')
-                self.__dict__.setdefault('_thread_efforts', {})[row[0]] = result.get('reasoningEffort')
-                return row[0]
-        result = await self.app.call("thread/start", {**options, "ephemeral": False})
-        thread = result["thread"]["id"]
-        self.db.execute("INSERT INTO threads VALUES (?, ?) ON CONFLICT(conversation) DO UPDATE SET thread_id=excluded.thread_id", (conversation, thread))
-        self.db.commit()
-        self.__dict__.setdefault('_thread_models', {})[thread] = result.get('model')
-        self.__dict__.setdefault('_thread_efforts', {})[thread] = result.get('reasoningEffort')
-        return thread
+        return await self.agent.prepare(await self.turn_request(source, authorized))
 
     async def effort_command(self, source, text):
         if not owner_request(source, self.cfg['owner_qq']):
@@ -355,8 +337,8 @@ class Bridge:
             name, current = selection
         else:
             thread = await self.thread_for(source, True)
-            name, current = self._thread_models.get(thread), self._thread_efforts.get(thread)
-        models = await available_models(self.app)
+            name, current = self.agent.model_state(thread)
+        models = {item['model']: item for item in await self.agent.models()}
         info = models.get(name, {})
         levels = [item['reasoningEffort'] for item in info.get('supportedReasoningEfforts', [])
                   if isinstance(item, dict) and isinstance(item.get('reasoningEffort'), str)]
@@ -385,7 +367,7 @@ class Bridge:
             return
         parts = text.split()
         if parts == ['/models']:
-            models = await available_models(self.app)
+            models = {item['model']: item for item in await self.agent.models()}
             names = [name + ('（仅文字）' if 'image' not in info.get('inputModalities', ['text', 'image']) else '')
                      for name, info in models.items()]
             await self.send(source, '可选模型：\n' + '\n'.join(names) if names else '当前没有可选模型。')
@@ -396,14 +378,14 @@ class Bridge:
                 await self.send(source, '当前会话模型设置：' + selection[0] + '，下一轮使用。')
                 return
             thread = await self.thread_for(source, True)
-            model = self._thread_models.get(thread)
+            model, _ = self.agent.model_state(thread)
             await self.send(source, '当前会话模型：' + (model or '接口未返回实际模型，暂时无法确认。'))
             return
         if len(parts) != 2 or parts[0] != '/model':
             await self.send(source, '用法：/models 列表；/model 查看；/model 模型名 切换；/model default 恢复默认。')
             return
-        models = await available_models(self.app)
-        name = await configured_default(self.app, BASE / 'workspace') if parts[1] == 'default' else parts[1]
+        models = {item['model']: item for item in await self.agent.models()}
+        name = await self.agent.default_model() if parts[1] == 'default' else parts[1]
         if name not in models:
             await self.send(source, '这个模型不在当前可选列表中，请先用 /models 查看。')
             return
@@ -453,8 +435,8 @@ class Bridge:
         async for message in stream_bubbles(queue):
             await self.send(source, message)
 
-    async def run_turn(self, source, thread, text, authorized, image_paths):
-        """Run one Codex turn; authorized turns stream progress and the answer to QQ."""
+    async def run_turn(self, source, thread, text, authorized, image_paths, *, request=None):
+        """Run one agent turn; keep progress and QQ streaming policy here."""
         progress_queue = asyncio.Queue(maxsize=128)
 
         def progress(message):
@@ -470,12 +452,18 @@ class Bridge:
         reporter = asyncio.create_task(self.relay_progress(source, progress_queue)) if authorized else None
         answer_sender = asyncio.create_task(self.relay_answer(source, answer_queue)) if authorized else None
         selection = self.db.execute('SELECT model, effort FROM conversation_models WHERE conversation=?', (self.conversation(source),)).fetchone()
-        model_options = {'model': selection[0], 'effort': selection[1]} if selection else {}
+        if request is None:
+            request = TurnRequest(self.conversation(source), text, CHAT,
+                                  FULL if authorized else NONE, '')
+        request.text, request.session_id = text, thread
+        request.model = selection[0] if selection else None
+        request.effort = selection[1] if selection else None
+        request.on_progress = progress if authorized else None
+        request.on_answer = answer_delta if authorized else None
+        request.show_tools = bool(self.cfg.get('show_tool_progress', False))
+        request.images = tuple(image_paths)
         try:
-            reply = await self.app.turn(thread, text, on_progress=progress if authorized else None,
-                                        on_answer=answer_delta if authorized else None,
-                                        show_tools=bool(self.cfg.get('show_tool_progress', False)),
-                                        image_paths=image_paths, **model_options)
+            reply = await self.agent.run(request)
             if answer_sender:
                 answer_queue.put_nowait(None)
                 await asyncio.wait_for(asyncio.shield(answer_sender), 120)
@@ -498,9 +486,10 @@ class Bridge:
 
     async def chat(self, source, text, context_id=None, image_paths=()):
         authorized = owner_request(source, self.cfg['owner_qq'])
-        thread = await self.thread_for(source, authorized)
+        request = await self.turn_request(source, authorized)
+        thread = await self.agent.prepare(request)
         text = self.turn_text(source, thread, text, context_id)
-        reply = await self.run_turn(source, thread, text, authorized, image_paths)
+        reply = await self.run_turn(source, thread, text, authorized, image_paths, request=request)
         self.db.execute("INSERT OR IGNORE INTO bootstrap VALUES (?)", (thread,))
         self.db.commit()
         return reply, authorized
@@ -550,14 +539,13 @@ class Bridge:
                 if text in ("/ping", "连接测试"):
                     await self.send(source, "QQ 聊天连接正常。")
                 elif text == "/new":
-                    self.db.execute("INSERT INTO old_threads SELECT conversation, thread_id, ? FROM threads WHERE conversation=?", (time.time(), self.conversation(source)))
-                    self.db.execute("DELETE FROM threads WHERE conversation=?", (self.conversation(source),))
+                    await self.agent.reset(self.conversation(source))
                     self.db.execute("DELETE FROM history WHERE conversation=?", (self.conversation(source),))
                     self.db.commit()
                     await self.send(source, "已清空聊天上下文，可以开始新话题。")
                 elif text == "/session":
-                    row = self.db.execute("SELECT thread_id FROM threads WHERE conversation=?", (self.conversation(source),)).fetchone()
-                    await self.send(source, "当前会话：" + (row[0] if row else "尚未创建；发送一条消息即可创建。"))
+                    thread = self.agent.session_id(self.conversation(source))
+                    await self.send(source, "当前会话：" + (thread if thread else "尚未创建；发送一条消息即可创建。"))
                 elif text == '/blacklist':
                     users = self.cfg.get('group_user_blacklist', [])
                     await self.send(source, '群聊用户黑名单：' + ('、'.join(map(str, users)) if users else '空'))
@@ -657,7 +645,7 @@ class Bridge:
             self.ws = None
 
     async def run(self):
-        await self.app.start()
+        await self.agent.start()
         logging.info("App Server initialized")
         while True:
             try:

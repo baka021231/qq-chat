@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from qq_chat.codex_app import AppServer, progress_text
+from qq_chat.agents.codex import CodexAgent
 from qq_chat.bridge import Bridge, Source, incoming_text, speaker_message, owner_request, conversation_key
 
 
@@ -234,7 +235,8 @@ class MessagePolicyTests(unittest.TestCase):
             async def send(source, text):
                 pass
 
-            bridge.app, bridge.send = FakeApp(), send
+            bridge.agents = {'codex': CodexAgent(bridge.db, Path.cwd() / 'workspace', 'unused', app=FakeApp())}
+            bridge.send = send
             try:
                 for source in (Source('group', 999, 123), Source('group', 999, 789), Source('group', 999, 123)):
                     await bridge.chat(source, 'test')
