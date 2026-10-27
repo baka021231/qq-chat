@@ -239,6 +239,20 @@ class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.db.execute('SELECT count(*) FROM threads').fetchone()[0], 1)
         self.assertFalse(calls[-1][1]['ephemeral'])
 
+    async def test_check_execution_is_one_read_and_rejects_ambiguous_turns(self):
+        calls = []
+        turns = [{'id': 't1', 'status': 'inProgress'}]
+        class Transport:
+            async def start(self): pass
+            async def call(self, method, params):
+                calls.append((method, params)); return {'thread': {'turns': list(turns)}}
+        agent = CodexAgent(self.db, '/unused', 'unused', app=Transport())
+        self.assertEqual(await agent.check_execution('task-session'), 'inProgress')
+        self.assertEqual(calls, [('thread/read', {'threadId': 'task-session', 'includeTurns': True})])
+        turns.append({'id': 't2', 'status': 'completed'})
+        self.assertEqual(await agent.check_execution('task-session'), 'unknown')
+        self.assertEqual(await agent.check_execution('task-session', {'turn_id': 't2'}), 'completed')
+
     async def test_interrupt_uses_only_active_thread_and_turn(self):
         app = AppServer('unused'); calls = []
         async def call(method, params):

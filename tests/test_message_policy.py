@@ -33,6 +33,8 @@ class MessagePolicyTests(unittest.TestCase):
                     self.assertIn('请主人用 /task 目标', a.instructions)
                     self.assertNotIn('请主人用 /task 目标', b.instructions)
                     self.assertNotIn('dispatch_task', a.instructions)
+                    self.assertNotIn('/task check', b.instructions)
+                    self.assertIsNone(b.grant)
                     self.assertNotEqual(a.key, b.key)
                 finally:
                     bridge.db.close()

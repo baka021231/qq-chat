@@ -13,7 +13,8 @@ import uuid
 import unicodedata
 from . import prompts
 from .agents import CHAT, FULL, NONE, TurnRequest, build_agents
-from .agents.base import MissingSession, Interrupted
+from .agents.base import MissingSession, Interrupted, FRONT
+from .tool_server import ToolServer
 from .tasks import TaskManager
 from .task_commands import TaskCommands, serialized
 from .agents.config import legacy_codex_profile, settings
@@ -172,6 +173,8 @@ class Bridge(TaskCommands):
         self.agents = build_agents(cfg, self.db, BASE / "workspace")
         self._history_replies = {}
         self.tasks = TaskManager(self, BASE)
+        self.tool_server = ToolServer(self, BASE)
+        self._front_grants = {}
         self._active_front = {}
 
     @property
@@ -349,7 +352,10 @@ class Bridge(TaskCommands):
             model=selection[0] if selection else profile.get('model'),
             effort=selection[1] if selection else profile.get('effort'))
         if authorized and self.cfg.get('agents', {}).get('back'):
-            request.instructions += '\n' + prompts.FRONT_DESK
+            grant = self.__dict__.get('_front_grants', {}).get(request.key)
+            request.level = FRONT if grant is not None else NONE
+            request.grant = grant
+            request.instructions += '\n' + (prompts.FRONT_DESK_TOOLS if grant is not None else prompts.FRONT_DESK)
         return request
 
     async def thread_for(self, source, authorized):
@@ -505,7 +511,20 @@ class Bridge(TaskCommands):
 
     @serialized
     async def chat(self, source, text, context_id=None, image_paths=()):
-        async with self.front_execution(source, self.agent_for(source)):
+        agent = self.agent_for(source)
+        config = self.cfg.get('agents', {})
+        profile = config.get('profiles', {}).get(config.get('front'), {})
+        server = getattr(self, 'tool_server', None)
+        if (owner_request(source, self.cfg['owner_qq']) and config.get('back')
+                and profile.get('type') == 'claude_code' and server and server.server is not None):
+            async with server.grant(source) as grant:
+                self._front_grants[self.conversation(source)] = grant
+                try:
+                    async with self.front_execution(source, agent):
+                        return await self._chat(source, text, context_id, image_paths)
+                finally:
+                    self._front_grants.pop(self.conversation(source), None)
+        async with self.front_execution(source, agent):
             return await self._chat(source, text, context_id, image_paths)
 
     async def _chat(self, source, text, context_id=None, image_paths=()):
@@ -614,7 +633,7 @@ class Bridge(TaskCommands):
                         continue
                     await self.send(source, '已加入群聊用户黑名单。' if parts[0] == '/block' else '已解除群聊用户拉黑。')
                 elif text == "/help":
-                    await self.send(source, "Aemeath：主人在私聊或群聊可请求Linux操作，其他人仅文字聊天；Windows文件只读。群聊需@机器人并附文字或图片，或喊Aemeath、爱弥斯、ams、小爱（英文不分大小写）。图片识别仅主人可用，每条最多5张、每张20 MiB，支持PNG、JPEG、WebP、GIF。文件附件仅主人私聊接收。/ping、/help 所有人可用；/new 创建新会话、/session 查看会话ID、/models 查看可选模型、/model 查看当前模型、/model 模型名 切换、/model default 恢复默认、/effort 查看强度、/effort 档位 切换强度、/effort default 恢复模型默认强度、/task 完整目标 手动交给后台、/task release 编号 人工释放待确认任务、/tasks 查看当前会话任务、/stop 停前台、/stop 编号 停任务、/stop all 停本会话全部后台任务、/blacklist 查看群聊用户黑名单、/block QQ号 拉黑、/unblock QQ号 解除拉黑仅限主人。黑名单用户的群消息静默忽略。")
+                    await self.send(source, "Aemeath：主人在私聊或群聊可请求Linux操作，其他人仅文字聊天；Windows文件只读。群聊需@机器人并附文字或图片，或喊Aemeath、爱弥斯、ams、小爱（英文不分大小写）。图片识别仅主人可用，每条最多5张、每张20 MiB，支持PNG、JPEG、WebP、GIF。文件附件仅主人私聊接收。/ping、/help 所有人可用；/new 创建新会话、/session 查看会话ID、/models 查看可选模型、/model 查看当前模型、/model 模型名 切换、/model default 恢复默认、/effort 查看强度、/effort 档位 切换强度、/effort default 恢复模型默认强度、/task 完整目标 手动交给后台、/task check 编号 只查一次执行状态、/task release 编号 人工释放待确认任务、/tasks 查看当前会话任务、/stop 停前台、/stop 编号 停任务、/stop all 停本会话全部后台任务、/blacklist 查看群聊用户黑名单、/block QQ号 拉黑、/unblock QQ号 解除拉黑仅限主人。黑名单用户的群消息静默忽略。")
                 elif len(text) > 6000:
                     await self.send(source, "这条消息较长，请拆成每条不超过6000字。")
                 else:
@@ -712,6 +731,8 @@ class Bridge(TaskCommands):
         for name in dict.fromkeys((*settings(self.cfg)[:2], *self.cfg.get('agents', {}).get('back', []))):
             await self.agents[name].start()
         await self.tasks.recover_after_restart()
+        if self.cfg.get('agents', {}).get('back'):
+            await self.tool_server.start()
         logging.info("App Server initialized")
         while True:
             try:

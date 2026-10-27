@@ -85,6 +85,9 @@ class TaskCommands:
     def report_input(self, row):
         duration = max(0, int((row['finished'] or time.time()) - (row['started'] or row['created'])))
         body = (row['result'] or row['error'] or '')[:self.cfg.get('tasks', {}).get('report_chars', 4000)]
+        pending = self.db.execute('SELECT count(*) FROM task_inputs WHERE task=? AND consumed=0', (row['id'],)).fetchone()[0]
+        if pending:
+            body += f'\n尚未执行的追加要求：{pending} 条；停止、失败或重启后不会自动运行。'
         return (f"[系统：后台任务回报 #{row['id']} | agent：{row['agent']} | 状态：{LABELS[row['status']]} | 用时：{duration} 秒]\n"
                 f"任务：{row['goal'][:200]}\n报告（节选，全文在 workspace/tasks/{row['id']}.md）：\n{body}")
 
@@ -105,11 +108,13 @@ class TaskCommands:
                             # Recovery warnings must be deterministic and never minimized by a model.
                             text = (f"【任务#{ident} 执行状态待确认】重启或连接中断前的执行未结算。"
                                     + ('新的写任务会排队。' if row['writes'] else '')
-                                    + f'请先人工确认已结束，再用 /task release {ident} 释放。')
+                                    + f'可用 /task check {ident} 向 Codex 只查一次执行状态；查询不会释放锁。'
+                                    + '请确认该轮已结束且没有遗留写文件的命令；查不到时需在终端人工核实。'
+                                    + f'确认后再用 /task release {ident} 释放。')
                         else:
                             try:
                                 request = await self.turn_request(source, True)
-                                request.level, request.role = NONE, CHAT
+                                request.level, request.role, request.grant = NONE, CHAT, None
                                 request.instructions += '\n' + prompts.TASK_REPORT
                                 agent = self.agent_for(source)
                                 request.session_id = await agent.prepare(request)
@@ -132,7 +137,25 @@ class TaskCommands:
                 except Exception:
                     logging.warning('Task report pending id=%s', ident)
 
+    async def task_receipt(self, ident):
+        from .bridge import Source
+        locks = self.__dict__.setdefault('_receipt_locks', defaultdict(asyncio.Lock))
+        async with locks[ident]:
+            row = self.tasks.get(ident)
+            if row['receipt_sent']:
+                return True
+            try:
+                source = Source(**json.loads(row['source']))
+                await self.send(source, f"【已下发任务 #{ident} · {row['agent']}】{row['goal'][:200]}")
+                self.tasks._set(ident, receipt_sent=1)
+                return True
+            except Exception:
+                logging.warning('Task receipt pending id=%s', ident)
+                return False
+
     async def flush_task_reports(self):
+        for (ident,) in self.db.execute('SELECT id FROM tasks WHERE receipt_sent=0 ORDER BY id').fetchall():
+            await self.task_receipt(ident)
         rows = self.db.execute("SELECT id FROM tasks WHERE reported=0 AND status IN ('done','failed','stopped','interrupted','orphaned') ORDER BY id").fetchall()
         # A stuck report in one conversation must not block delivery to another.
         jobs = [asyncio.create_task(self.report_task(ident)) for (ident,) in rows]
@@ -149,7 +172,16 @@ class TaskCommands:
             return
         parts = text.split(maxsplit=2)
         try:
-            if len(parts) >= 2 and parts[1] == 'release':
+            if len(parts) >= 2 and parts[1] == 'check':
+                if len(parts) != 3 or not parts[2].isdigit():
+                    raise ValueError('用法：/task check 编号；只查一次，不自动释放锁')
+                ident = int(parts[2])
+                status = await self.tasks.check(self.conversation(source), ident)
+                label = {'inProgress': 'Codex 确认该轮仍在运行', 'completed': 'Codex 确认该轮已完成',
+                         'interrupted': 'Codex 确认该轮已中断', 'failed': 'Codex 确认该轮已失败',
+                         'unknown': '未能确认该轮状态，请在终端人工核实，勿据此释放锁'}[status]
+                await self.send(source, f'【任务#{ident} 查询】{label}。仅查询一次，任务状态和锁均未改变；确认该轮及遗留命令都已结束后再人工 release。')
+            elif len(parts) >= 2 and parts[1] == 'release':
                 if len(parts) != 3 or not parts[2].isdigit():
                     raise ValueError('用法：/task release 编号；仅在你确认旧任务已结束后使用')
                 await self.tasks.release(self.conversation(source), int(parts[2]))
@@ -159,7 +191,7 @@ class TaskCommands:
                 if not goal:
                     raise ValueError('用法：/task 完整目标；后台看不到聊天记录，请把要求写全')
                 task = await self.tasks.dispatch(self.conversation(source), source, goal)
-                await self.send(source, f"【已下发任务 #{task['id']} · {task['agent']}】{goal[:200]}")
+                await self.task_receipt(task['id'])
         except ValueError as error:
             await self.send(source, str(error))
 
@@ -209,6 +241,10 @@ class TaskCommands:
                 if row and row['status'] == 'queued':
                     await self.tasks.stop(key, ident)
                     cancelled.add(ident)
+            for ident in cancelled:
+                await self.send(source, f'【任务#{ident}】已取消（还在排队，未开始执行）')
+            if len(cancelled) == len(ids):
+                return
             await self.send(source, '已请求停止后台任务，等待执行端确认。')
             for ident in ids:
                 if ident in cancelled:

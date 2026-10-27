@@ -173,3 +173,9 @@ python3 tools/restart_bridge.py
 ## 工作台设定加载
 
 桥接每轮按顺序读取 `workspace/SOUL.md`、`workspace/OWNER.md`，将存在的文件注入 developerInstructions；缺失文件跳过，不回退读取 AGENTS.md，也不自动创建或迁移文件。SOUL.md 对所有会话注入；OWNER.md 仅对桥接核验的主人私聊和群内主人会话注入，访客不会读取该文件。`workspace/AGENTS.md` 仅由 Codex 按工作目录原生加载，桥接不再手动注入。
+
+### Claude 工具前台（PR4）
+
+完整示例见 `config.front-back.example.json`：主人前台 `claude_front` 使用 sonnet，访客 `claude_guest` 使用 haiku，后台 codex。合并现有私密配置并校验，主人确认部署后才重启；不要把示例的占位参数当真实登录信息。
+
+分离模式下 Claude 主人前台只能经 MCP 查询、派发、停止、追加要求与拍一拍当前主人；任务真实建立后桥接直接发编号回执。访客无工具。`/task` 手动入口保留，Codex 前台仍用手动入口。`/task check 编号` 只读查询一次、不自动放锁；确认结束后 `/task release 编号`。FRONT 本机隔离证据和启动耗时调查见设计第 14 节，两个性能实验开关未写入配置。

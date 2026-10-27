@@ -39,9 +39,11 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔随机 2～3 �
 | `agents/base.py` | `Agent`、`TurnRequest`、角色/权限常量和返回值上限；不负责 QQ 策略 | 无 |
 | `agents/codex.py` | `CodexAgent`：线程准备/恢复、状态查询、归档、模型目录与底层 turn 调用 | `agents.base`、`codex_app`、`models` |
 | `agents/__init__.py` | 构建 Codex/Claude profile，Codex profile 共用 transport | `agents.codex`、`agents.claude`、`agents.config` |
-| `agents/claude.py` | Claude JSONL、NONE/FULL 启动、工具列表检查、回复校验、进程清理 | `agents.base` |
+| `agents/claude.py` | Claude JSONL、NONE/FRONT/FULL 启动、工具列表检查、回复校验、进程清理 | `agents.base` |
 | `agents/config.py` | profile 引用、权限模式、模型目录及阶段范围校验 | 无 |
 | `agents/state.py` | 模型偏好迁移与隔离、历史导入预算 | 无 |
+| `tool_server.py` | 每轮授权、Unix socket、工具 schema/执行、范围校验与真实回执 | `bridge`（运行时校验） |
+| `front_tools.py` | 标准库 MCP stdio shim，经令牌转发工具调用 | 标准库 |
 | `tasks.py` | TaskManager：持久任务、接纳上限、后台执行、写锁、中断与保守重启善后 | `agents.base`、`prompts` |
 | `task_commands.py` | TaskCommands：会话锁、手动命令、可补发回报与共享 deliver | `tasks`、`agents.base`、`prompts` |
 | `prompts.py` | 发给模型的全部提示词与拼接函数 | 无 |
@@ -67,7 +69,7 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔随机 2～3 �
 
 所有权限都来自 `owner_request(source, owner)`，它只比较数字 QQ 号。结果决定三件事：
 
-1. 请求的权限级别：单 agent 主人 `FULL`，分离模式主人和所有访客 `NONE`（PR4 前手动分派）；`CodexAgent.prepare()` 维持原 sandbox：`danger-full-access` 或 `read-only`
+1. 请求的权限级别：单 agent 主人 `FULL`，分离模式 Claude 主人前台 `FRONT`、Codex 主人前台 `NONE`（手动分派）；访客及回报轮次 `NONE`；`CodexAgent.prepare()` 维持原 sandbox：`danger-full-access` 或 `read-only`
 2. 使用哪套指令：`prompts.OWNER` 或 `prompts.GUEST`（`prompts.instructions`）
 3. 能否使用管理命令、发图片和附件（`worker`、`receive_*`、`incoming_text`）
 
@@ -100,7 +102,8 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔随机 2～3 �
 
 | 表 | 用途 |
 | --- | --- |
-| `tasks` | 任务来源、目标、执行与回报状态；writes 在创建时冻结，orphaned 写任务继续占锁 |
+| `tasks` | 任务来源、目标、执行与回报状态；writes 冻结，orphaned 写任务继续占锁；receipt_sent 记录真实回执 |
+| `task_inputs` | 运行任务的追加要求，下一轮消费标记；重启后不自动执行 |
 | `seen` | 已处理的消息 ID，保留 7 天 |
 | `threads` | 会话键 → Codex 线程 ID |
 | `conversation_models` | 旧 Codex 偏好的兼容表，迁移后仍同步默认 Codex 的选择 |
@@ -123,7 +126,7 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔随机 2～3 �
 
 ## 常见改动
 
-当前边界：`Bridge.agents` 持有各 profile，`Bridge.agent` 是主人前台便捷入口，`agent_for(source)` 按真实身份选择前台或访客 profile；Bridge 不再依赖 `self.app`。`TurnRequest` 的 `role=CHAT`、`level=FULL/NONE`、人设全文和模型选择由 Bridge 组装。先 `prepare(req)` 得到线程，再拼接旧历史与群聊上下文，最后通过 `run(req)` 执行。请求额外包含 `session_id`（已准备的线程）和 `show_tools`（沿用进度显示开关），避免 run 再次恢复线程或重复读取人设。
+当前边界：`Bridge.agents` 持有各 profile，`Bridge.agent` 是主人前台便捷入口，`agent_for(source)` 按真实身份选择前台或访客 profile；Bridge 不再依赖 `self.app`。`TurnRequest` 的 `role=CHAT/TASK`、`level=FULL/FRONT/NONE`、人设全文和模型选择由 Bridge 组装。先 `prepare(req)` 得到线程，再拼接旧历史与群聊上下文，最后通过 `run(req)` 执行。请求额外包含 `session_id`（已准备的线程）和 `show_tools`（沿用进度显示开关），避免 run 再次恢复线程或重复读取人设。
 
 `session_id(key)` 只查已有映射，供 `/session` 使用；`model_state(thread)` 提供接口返回的实际模型与强度；`models()` 和 `default_model()` 封装原模型目录及临时线程解析。`reset(key)` 仅在当前数据库事务中归档、移除当前 profile 的会话映射，Bridge 继续清除 history 并统一提交，模型选择不清除。适配器借用 Bridge 的数据库，不负责关闭它。
 
@@ -180,3 +183,15 @@ python3 -m unittest discover -s tests -v
 会话锁按 conversation key 建立，对同一 asyncio task 可重入；chat、模型/强度命令、/new、回报均持锁，worker 持锁直到交付和历史落库。前台与回报不会并发操作同一线程。控制命令和后台调度不取会话锁。
 
 回报还有独立的 task id 锁，避免完成与重连补报同时重复生成/发送。先在会话锁内用前台 CHAT/NONE 生成非流式文字并持久化 report_text；失败使用真实状态的降级摘要；orphaned 始终由桥接固定警告。再由 deliver 走原发送/语音/历史路径，所有 OneBot 气泡确认成功才记 reported=1；已有文字补发不调用模型。/new 不取消任务，回报时重新取当前线程；系统回报首行先于历史参考，防止被导入包装遮住。部分气泡成功后断线可能补发重复，采用至少一次交付。
+
+PR4 前置小修复：TaskManager.check 按原会话校验，再调用 CodexAgent.check_execution，只发一次 thread/read(includeTurns=true)，10 秒超时不重试。PR3 每个任务仅一轮；缺少精确 turn_id 且返回多轮时未知，不误判其他轮次。查询不改变状态或锁。orphaned 固定通知说明 check、终端核实及人工 release。排队取消直接说明未执行。
+
+## PR4：前台工具授权
+
+tool_server 绑定 run/tools.sock，目录 700、socket 600，拒绝替换普通文件或活 socket。Bridge.chat 在已核验主人、back 非空、Claude 前台且工具服务已启动时才生成逐轮 ToolGrant；MCP 配置包含 socket 和随机令牌，权限 600，令牌绑定 Source/会话并限时，finally 撤销。工具请求独立协程处理，不取会话锁，避免前台 await agent.run 时死锁。访客、报告轮次不取得 grant。
+
+Claude FRONT 不加 safe-mode，设置两个禁用记忆环境变量、空 cwd、空内置工具、显式 MCP 和 dontAsk；init.tools 精确等于 FRONT_TOOLS，工具缺失和多出都失败，运行中也检查白名单。CHAT 全轮缓冲检查伪调用及固定回执标记后才交付。NONE/FULL 原规则保留；本机版本隔离证据见 FRONT-BACK 14 节，不由 tools 为空推断 hooks 或插件关闭。
+
+shim 用 python -I 的绝对路径启动，不导入包；tools/list 向桥接取动态后台枚举与 schema。动作参数不接受来源、QQ 或会话字段，来源只认令牌。任务工具仅查当前会话，返回有长度限制的摘要；poke 根据绑定 Source 调用本机 NapCat send_poke，不能指定第三人。日志记录工具名、来源类型及结局，不记录授权串或任意正文。
+
+创建任务与 receipt_sent=0 同步落库，桥接发送真实回执并确认后置 1，失败不丢任务，工具仍返回真实编号和 pending 回执状态；重连先补回执。旧任务迁移默认 1。send_to_task 写 task_inputs，任务完成一轮后在原 profile/写占用下续接同一 session，使用创建时的总执行期限。Codex 启动每轮时记录 runtime_ref；人工 check 使用精确 turn_id，防止续轮后拿别的轮次推断。

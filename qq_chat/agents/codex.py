@@ -77,6 +77,8 @@ class CodexAgent(Agent):
     async def run(self, req: TurnRequest):
         thread = req.session_id if req.session_id is not None else await self.prepare(req)
         options = {'model': req.model, 'effort': req.effort} if req.model is not None else {}
+        if req.on_runtime is not None:
+            options['on_started'] = req.on_runtime
         reply = await self.app.turn(thread, req.text, on_progress=req.on_progress,
                                     on_answer=req.on_answer, show_tools=req.show_tools,
                                     image_paths=req.images, **options)
@@ -98,6 +100,19 @@ class CodexAgent(Agent):
 
     async def default_model(self):
         return await configured_default(self.app, self.cwd)
+
+    async def check_execution(self, session, runtime_ref=None):
+        """One read-only RPC, never resume, interrupt, retry or release a task."""
+        await self.start()
+        result = await self.app.call('thread/read', {'threadId': session, 'includeTurns': True})
+        turns = result.get('thread', {}).get('turns', [])
+        turn_id = (runtime_ref or {}).get('turn_id')
+        matches = [turn for turn in turns if turn.get('id') == turn_id] if turn_id else turns
+        # PR3 creates exactly one turn per task thread. Never infer from another turn.
+        if len(matches) != 1:
+            return 'unknown'
+        status = matches[0].get('status')
+        return status if status in ('inProgress', 'completed', 'failed', 'interrupted') else 'unknown'
 
     async def interrupt(self, key):
         thread = self.session_id(key)

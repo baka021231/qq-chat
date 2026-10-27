@@ -35,6 +35,9 @@ class TaskManager:
             result TEXT, error TEXT, report_text TEXT, reported INTEGER DEFAULT 0)''')
         if 'writes' not in {r[1] for r in self.db.execute('PRAGMA table_info(tasks)')}:
             self.db.execute('ALTER TABLE tasks ADD COLUMN writes INTEGER NOT NULL DEFAULT 1')
+        if 'receipt_sent' not in {r[1] for r in self.db.execute('PRAGMA table_info(tasks)')}:
+            self.db.execute('ALTER TABLE tasks ADD COLUMN receipt_sent INTEGER NOT NULL DEFAULT 1')
+        self.db.execute('CREATE TABLE IF NOT EXISTS task_inputs (id INTEGER PRIMARY KEY AUTOINCREMENT, task INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER DEFAULT 0)')
         self.db.commit()
 
     def get(self, ident):
@@ -79,7 +82,7 @@ class TaskManager:
         count = self.db.execute("SELECT count(*) FROM tasks WHERE status IN ('queued','running','stopping','orphaned')").fetchone()[0]
         if count >= self.config.get('max_running', 4) or len(self.list(conversation, live=True)) >= self.config.get('max_per_conversation', 3):
             raise ValueError('任务数量已达上限，请等现有任务结束')
-        cur = self.db.execute('INSERT INTO tasks(conversation,source,agent,goal,status,created,writes) VALUES(?,?,?,?,?,?,?)',
+        cur = self.db.execute('INSERT INTO tasks(conversation,source,agent,goal,status,created,writes,receipt_sent) VALUES(?,?,?,?,?,?,?,0)',
                               (conversation, json.dumps(asdict(source), ensure_ascii=False), name, goal.strip(), 'queued', time.time(), int(self.writes(name))))
         self.db.commit()
         ident = cur.lastrowid
@@ -124,21 +127,35 @@ class TaskManager:
             profile = getattr(agent, 'profile', {})
             req = TurnRequest(f'task:{ident}', row['goal'], TASK, FULL, prompts.WORKER,
                               model=profile.get('model'), effort=profile.get('effort'),
-                              on_progress=lambda text: self._progress(ident, text))
+                              on_progress=lambda text: self._progress(ident, text),
+                              on_runtime=lambda ref: self._set(ident, runtime_ref=json.dumps(ref)))
             req.session_id = await agent.prepare(req)
             self._set(ident, session_id=req.session_id)
             if self.config.get('progress', 'direct') == 'direct':
                 progress_sender = asyncio.create_task(self._relay_progress(ident, source))
-            execution = asyncio.create_task(agent.run(req))
-            done, _ = await asyncio.wait({execution}, timeout=60 * self.config.get('timeout_minutes', 60))
-            if not done:
-                self._set(ident, error='任务超时，已请求停止；未确认结束前仍占用执行锁')
-                outcome = await self.stop(row['conversation'], ident)
-                notice = '停止请求失败，执行锁保留，请重试 /stop。' if outcome == 'failed' else '已请求停止，等待执行端确认。'
-                with contextlib.suppress(Exception):
-                    await self.bridge.send(source, f'【任务#{ident} 超时】{notice}')
-            result = await execution
+            deadline = time.monotonic() + 60 * self.config.get('timeout_minutes', 60)
+            results = []
+            while True:
+                execution = asyncio.create_task(agent.run(req))
+                done, _ = await asyncio.wait({execution}, timeout=max(0, deadline - time.monotonic()))
+                if not done:
+                    self._set(ident, error='任务超时，已请求停止；未确认结束前仍占用执行锁')
+                    outcome = await self.stop(row['conversation'], ident)
+                    notice = '停止请求失败，执行锁保留，请重试 /stop。' if outcome == 'failed' else '已请求停止，等待执行端确认。'
+                    with contextlib.suppress(Exception):
+                        await self.bridge.send(source, f'【任务#{ident} 超时】{notice}')
+                results.append(await execution)
+                pending = self.db.execute('SELECT id,text FROM task_inputs WHERE task=? AND consumed=0 ORDER BY id', (ident,)).fetchall()
+                if not pending or self.get(ident)['status'] == 'stopping' or time.monotonic() >= deadline:
+                    break
+                req.text = '主人追加要求（按顺序）：\n' + '\n'.join(text for _, text in pending)
+                self.db.executemany('UPDATE task_inputs SET consumed=1 WHERE id=?', [(i,) for i, _ in pending])
+                self.db.commit()
+            result = '\n\n'.join(results)[-12000:]
+            if pending:
+                result += '\n未执行的追加要求：' + str(len(pending)) + ' 条（停止或超时后不再启动下一轮）。'
             self._set(ident, status='done', result=result, finished=time.time())
+
         except Interrupted as error:
             previous = self.get(ident)['error'] or ''
             self._set(ident, status='stopped', error=(previous + '\n' + str(error)).strip(), finished=time.time())
@@ -182,6 +199,9 @@ class TaskManager:
         with os.fdopen(fd, 'w') as out:
             os.fchmod(out.fileno(), 0o600)
             out.write(f"# 任务 {ident} · {LABELS[row['status']]}\n\n{row['goal']}\n\n{row['result'] or row['error'] or ''}\n")
+            pending = self.db.execute('SELECT count(*) FROM task_inputs WHERE task=? AND consumed=0', (ident,)).fetchone()[0]
+            if pending:
+                out.write(f'\n尚未执行的追加要求：{pending} 条，不会自动恢复运行。\n')
 
     async def stop(self, conversation, ident):
         row = self.status(conversation, ident)
@@ -216,6 +236,33 @@ class TaskManager:
             from .bridge import Source
             with contextlib.suppress(Exception):
                 await self.bridge.send(Source(**json.loads(row['source'])), f'【任务#{ident}】停止尚未确认，继续等待；执行锁仍保留。')
+
+    def send_message(self, conversation, ident, text):
+        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 6000:
+            raise ValueError('追加要求应为 1～6000 字')
+        row = self.status(conversation, ident)
+        if not row or row['status'] != 'running':
+            raise ValueError('当前会话没有这个运行中的任务')
+        count = self.db.execute('SELECT count(*) FROM task_inputs WHERE task=? AND consumed=0', (ident,)).fetchone()[0]
+        if count >= 10:
+            raise ValueError('追加要求已达上限，请等待下一轮')
+        self.db.execute('INSERT INTO task_inputs(task,text) VALUES(?,?)', (ident, text))
+        self.db.commit()
+        return {'id': ident, 'status': 'queued_for_next_turn'}
+
+    async def check(self, conversation, ident):
+        row = self.status(conversation, ident)
+        if not row:
+            raise ValueError('当前会话没有该任务')
+        agent = self.bridge.agents.get(row['agent'])
+        check = getattr(agent, 'check_execution', None)
+        if not check or not row['session_id']:
+            return 'unknown'
+        try:
+            ref = json.loads(row['runtime_ref']) if row['runtime_ref'] else None
+            return await asyncio.wait_for(check(row['session_id'], ref), 10)
+        except (RuntimeError, OSError, ValueError, asyncio.TimeoutError):
+            return 'unknown'
 
     async def release(self, conversation, ident):
         row = self.status(conversation, ident)

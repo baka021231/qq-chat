@@ -65,10 +65,21 @@ class CommandAuthTests(unittest.IsolatedAsyncioTestCase):
     async def test_task_commands_from_guests_are_silent_and_do_not_touch_state(self):
         before = self.snapshot()
         for source in (Source('group', 999, 789, '主人'), Source('private', 789, 789)):
-            for command in ('/task edit file', '/task release 1', '/tasks', '/stop', '/stop all', '/STOP 1'):
+            for command in ('/task edit file', '/task release 1', '/task check 1', '/tasks', '/stop', '/stop all', '/STOP 1'):
                 await self.dispatch(source, command)
                 self.assertEqual(self.sent, [])
                 self.assertEqual(self.snapshot(), before)
+
+    async def test_front_grants_reject_guest_and_forged_private_target(self):
+        from qq_chat.tool_server import ToolServer
+        with tempfile.TemporaryDirectory() as folder:
+            server = ToolServer(self.bridge, folder)
+            server.server = object()  # Grant checks run before any socket or file work.
+            for source in (Source('group',999,789,'主人'), Source('private',789,789), Source('private',789,123)):
+                with self.assertRaises(ValueError):
+                    async with server.grant(source): pass
+            self.assertEqual(server.grants,{})
+            self.assertEqual(list(Path(folder).iterdir()),[])
 
     async def test_owner_can_reset_only_own_group_thread(self):
         await self.dispatch(Source('group', 999, 123), '/new')
