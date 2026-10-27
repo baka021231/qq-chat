@@ -3,9 +3,8 @@ import contextlib
 from pathlib import Path
 import time
 
-from ..codex_app import AppServer
 from ..models import available_models, configured_default
-from .base import Agent, CHAT, FULL, MAX_REPLY, NONE, TurnRequest
+from .base import Agent, CHAT, TASK, FULL, MAX_REPLY, NONE, TurnRequest
 
 
 class CodexAgent(Agent):
@@ -13,15 +12,19 @@ class CodexAgent(Agent):
         self.name = name
         self.db = db
         self.cwd = Path(cwd)
+        from ..codex_app import AppServer
         self.app = app if app is not None else AppServer(executable)
         self.profile, self.legacy = dict(profile or {}), legacy
         self._models = {}
         self._efforts = {}
+        self._task_sessions = {}
 
     async def start(self):
         await self.app.start()
 
     def session_id(self, key):
+        if key.startswith('task:'):
+            return self._task_sessions.get(key)
         if self.legacy:
             row = self.db.execute('SELECT thread_id FROM threads WHERE conversation=?', (key,)).fetchone()
         else:
@@ -33,9 +36,8 @@ class CodexAgent(Agent):
         return self._models.get(session_id), self._efforts.get(session_id)
 
     async def prepare(self, req: TurnRequest):
-        # PR1 exposes only the legacy CHAT/FULL and CHAT/NONE modes.
-        if req.role != CHAT or req.level not in (FULL, NONE):
-            raise ValueError('Only legacy Codex chat modes are implemented in PR1')
+        if req.role not in (CHAT, TASK) or req.level not in (FULL, NONE) or (req.role == TASK and req.level != FULL):
+            raise ValueError('Unsupported Codex role/level')
         options = {'cwd': str(self.cwd), 'approvalPolicy': 'never',
                    'sandbox': self.profile.get('sandbox', 'danger-full-access') if req.level == FULL else 'read-only',
                    'developerInstructions': req.instructions}
@@ -59,7 +61,9 @@ class CodexAgent(Agent):
                 return thread
         result = await self.app.call('thread/start', {**options, 'ephemeral': False})
         thread = result['thread']['id']
-        if self.legacy:
+        if req.role == TASK:
+            self._task_sessions[req.key] = thread
+        elif self.legacy:
             self.db.execute('INSERT INTO threads VALUES (?, ?) ON CONFLICT(conversation) '
                             'DO UPDATE SET thread_id=excluded.thread_id', (req.key, thread))
         else:
@@ -94,6 +98,10 @@ class CodexAgent(Agent):
 
     async def default_model(self):
         return await configured_default(self.app, self.cwd)
+
+    async def interrupt(self, key):
+        thread = self.session_id(key)
+        return await self.app.interrupt(thread) if thread else False
 
     async def close(self):
         await self.app.close()

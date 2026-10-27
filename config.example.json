@@ -26,8 +26,18 @@
     "back": [],
     "profiles": {
       "codex": {
-        "type": "codex_app"
+        "type": "codex_app",
+        "writes": true,
+        "max_parallel": 1
       }
     }
+  },
+  "tasks": {
+    "max_running": 4,
+    "max_writers": 1,
+    "max_per_conversation": 3,
+    "timeout_minutes": 60,
+    "progress": "direct",
+    "report_chars": 4000
   }
 }

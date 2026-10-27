@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 from websockets.asyncio.client import unix_connect
+from .agents.base import Interrupted, ExecutionUncertain
 
 class AppServer:
     def __init__(self, executable):
@@ -18,6 +19,7 @@ class AppServer:
         self.closing = False
         self.pending = {}
         self.events = {}
+        self.active_turns = {}
         self.serial = 0
         self.ready = asyncio.Lock()
 
@@ -102,6 +104,7 @@ class AppServer:
         q = asyncio.Queue()
         self.events[thread] = q
         turn_id = None
+        ended = False
         try:
             inputs = [{'type': 'text', 'text': text}]
             inputs.extend({'type': 'localImage', 'path': str(path)} for path in image_paths)
@@ -112,6 +115,7 @@ class AppServer:
                 params['effort'] = effort
             result = await self.call('turn/start', params)
             turn_id = result['turn']['id']
+            self.active_turns[thread] = turn_id
             messages = {}
             phases, streamed = {}, {}
             async with asyncio.timeout(3600):
@@ -119,7 +123,7 @@ class AppServer:
                     event = await q.get()
                     method, params = event['method'], event.get('params', {})
                     if method == 'disconnected':
-                        raise RuntimeError('App Server disconnected during turn')
+                        raise ExecutionUncertain('App Server disconnected during turn')
                     if on_progress:
                         progress = progress_text(method, params, show_tools=show_tools)
                         if progress:
@@ -146,19 +150,32 @@ class AppServer:
                                     raise RuntimeError('Streamed answer differs from completed message')
                     if method == 'turn/completed' and params['turn']['id'] == turn_id:
                         turn = params['turn']
+                        ended = True
+                        if turn['status'] == 'interrupted':
+                            raise Interrupted('Codex turn interrupted')
                         if turn['status'] != 'completed':
                             raise RuntimeError('Codex turn failed: '+str(turn.get('error')))
                         reply = '\n\n'.join(messages.values()).strip()
                         if not reply:
                             raise RuntimeError('Codex returned empty reply')
                         return reply
-        except BaseException:
-            if turn_id:
+        except BaseException as error:
+            if turn_id and not ended:
                 with contextlib.suppress(Exception):
                     await self.call('turn/interrupt', {'threadId': thread, 'turnId': turn_id})
+            if not ended and not isinstance(error, (asyncio.CancelledError, Interrupted)):
+                raise ExecutionUncertain('Codex execution outcome is unconfirmed') from error
             raise
         finally:
             self.events.pop(thread, None)
+            self.active_turns.pop(thread, None)
+
+    async def interrupt(self, thread):
+        turn = self.active_turns.get(thread)
+        if turn is None:
+            return False
+        await self.call('turn/interrupt', {'threadId': thread, 'turnId': turn})
+        return True
 
     async def close(self):
         # Disconnect this client only; the daemon also serves terminal sessions.

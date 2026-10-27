@@ -9,7 +9,11 @@ MAX_REPLY = 12000
 
 
 class Interrupted(Exception):
-    """Reserved for the explicit interruption semantics introduced in PR3."""
+    """Execution has confirmed an interrupted outcome."""
+
+
+class ExecutionUncertain(RuntimeError):
+    """The transport cannot confirm that execution has ended."""
 
 
 class MissingSession(RuntimeError):
@@ -64,7 +68,7 @@ class Agent(ABC):
     async def default_model(self) -> str: ...
 
     async def interrupt(self, key: str) -> bool:
-        raise NotImplementedError('Explicit interruption is not implemented until PR3')
+        raise NotImplementedError('This backend does not implement interruption')
 
     @abstractmethod
     async def close(self): ...

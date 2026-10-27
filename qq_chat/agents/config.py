@@ -11,12 +11,17 @@ def settings(cfg):
         raise ValueError('agents.profiles must be an object')
     if not isinstance(agents.get('back', []), list):
         raise ValueError('agents.back must be a list')
-    if agents.get('back', []):
-        raise ValueError('Background agents are not implemented until PR3')
+    back = agents.get('back', [])
+    if len(back) > 1:
+        raise ValueError('Multiple background profiles are not implemented until PR5')
+    if not all(isinstance(name, str) for name in back):
+        raise ValueError('Invalid background profile')
     front, guest = agents.get('front'), agents.get('guest', agents.get('front'))
     profiles = dict(agents['profiles'])
     if not isinstance(front, str) or not isinstance(guest, str) or front not in profiles or guest not in profiles:
         raise ValueError('front and guest must reference defined profiles')
+    if any(name not in profiles for name in back):
+        raise ValueError('Unknown background profile')
     for name, profile in profiles.items():
         if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,63}', name):
             raise ValueError('Invalid agent profile name')
@@ -42,7 +47,7 @@ def settings(cfg):
                 raise ValueError('Duplicate Claude model names')
             if profile.get('model') not in names:
                 raise ValueError('Claude default model must appear in its catalog')
-            if name == front and profile.get('permission_mode') not in (
+            if (name == front or name in back) and profile.get('permission_mode') not in (
                     'dontAsk', 'acceptEdits', 'auto', 'manual', 'plan', 'bypassPermissions'):
                 raise ValueError('FULL Claude profile requires an explicit permission_mode')
             if not isinstance(profile.get('tools', 'default'), str):
@@ -58,6 +63,33 @@ def settings(cfg):
                     levels = item.get('supportedReasoningEfforts', [])
                     if not isinstance(levels, list) or not all(isinstance(level, dict) and isinstance(level.get('reasoningEffort'), str) for level in levels):
                         raise ValueError('Invalid configured reasoning efforts')
+    for name in back:
+        p = profiles[name]
+        if not isinstance(p.get('writes'), bool):
+            raise ValueError('Background profiles require explicit writes')
+        if p.get('max_parallel', 1) != 1 or isinstance(p.get('max_parallel', 1), bool):
+            raise ValueError('Background max_parallel must be 1 until PR5')
+        if p['type'] == 'codex_app':
+            can_write = p.get('sandbox', 'danger-full-access') != 'read-only'
+        else:
+            # Claude FULL can have user MCP tools: no reliable readonly sandbox.
+            can_write = True
+        if p['writes'] != can_write:
+            raise ValueError('Background writes does not match sandbox/tool capabilities')
+    limits = cfg.get('tasks', {})
+    if not isinstance(limits, dict):
+        raise ValueError('tasks must be an object')
+    for key, default in (('max_running', 4), ('max_per_conversation', 3), ('report_chars', 4000)):
+        value = limits.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError('Invalid tasks.' + key)
+    if limits.get('max_writers', 1) != 1 or isinstance(limits.get('max_writers', 1), bool):
+        raise ValueError('Only one global writer is supported')
+    minutes = limits.get('timeout_minutes', 60)
+    if isinstance(minutes, bool) or not isinstance(minutes, (int, float)) or not math.isfinite(minutes) or minutes <= 0:
+        raise ValueError('Invalid task timeout')
+    if limits.get('progress', 'direct') not in ('direct', 'silent'):
+        raise ValueError('Invalid tasks.progress')
     codex_paths = {p['path'] for p in profiles.values() if p['type'] == 'codex_app'}
     if len(codex_paths) > 1:
         raise ValueError('Codex profiles must share the daemon executable')

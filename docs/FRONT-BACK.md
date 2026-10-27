@@ -215,7 +215,7 @@ def user_message(text, images):
 1. **会话 ID**：首轮由桥接生成 `uuid4`，先写入 `agent_sessions`，再用 `--session-id` 启动；之后用 `--resume`。CLI 在初始化执行前明确表示找不到会话时，由 Bridge 归档映射、重建一次，并重新组装预算内历史；其他错误不重试，避免重复执行。
 2. **系统提示**：怎么写看 level，写什么看 role（4.1）。NONE 和 FRONT 没有内置工具，用 `--system-prompt-file` 整个替换默认提示，提示更短，也没有“我是 Claude Code”的身份。FULL 要用工具，不管是单 agent 的主人对话还是后台任务，都用 `--append-system-prompt-file` 追加，保留 Claude Code 自带的工具用法说明。提示文件写在 `run/` 下，权限 600。**不要用 `--system-prompt` 直接传文字**：命令行参数在 `ps` 里所有本机用户都能看到，而 OWNER.md 里有个人资料。
 3. **工作目录**：NONE/FRONT 用桥接专用空目录（实现为 `run/claude/<profile>/`），不能用 workspace 或任何仓库作为 cwd。FULL 正常使用执行 workspace，保留项目规则加载。即使空 cwd 也不保证隔离用户自定义项；NONE 使用 safe-mode，FRONT 在 PR4 前按第 13 节专项检查。
-4. **子进程**：`asyncio.create_subprocess_exec(..., limit=16 * 1024 * 1024, start_new_session=True)`。默认 64KB 的行长上限遇到大段工具结果会报错。后台任务的进程一启动就记录身份，写进 `tasks.runtime_ref`：pid、pgid、`/proc/<pid>/stat` 里的启动时间、`/proc/sys/kernel/random/boot_id`、`/proc/<pid>/cgroup`，以及通过环境变量传入的一次性随机串 `QQ_TASK_NONCE`。重启善后靠这些判断进程归属（6.2）。
+4. **子进程**：`asyncio.create_subprocess_exec(..., limit=16 * 1024 * 1024, start_new_session=True)`。默认 64KB 的行长上限遇到大段工具结果会报错。当前桥接活进程只中断自己持有的子进程对象；重启后不恢复或核对旧进程身份（6.2）。pid、pgid、启动时间、boot_id、cgroup、QQ_TASK_NONCE 的自动识别方案留到第 13 节作为可选增强。
 5. **事件处理**：
 
    | 事件 | 处理 |
@@ -294,7 +294,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   conversation TEXT NOT NULL,     -- 发起任务的会话键，结果只回这里
   source TEXT NOT NULL,           -- Source 的 JSON，回报时用来发送
   agent TEXT NOT NULL, session_id TEXT,
-  runtime_ref TEXT,               -- JSON。Codex：thread_id + turn_id；Claude：4.3 第 4 条的进程身份
+  runtime_ref TEXT,               -- 留作后续增强；PR3 不记录或核对旧执行身份
+  writes INTEGER NOT NULL DEFAULT 1, -- 创建时冻结写权限，旧任务缺省保守视为写任务
   goal TEXT NOT NULL,
   status TEXT NOT NULL,           -- queued / running / stopping / orphaned / done / failed / stopped / interrupted
                                   -- 终态：done / failed / stopped / interrupted；orphaned 见 6.2
@@ -324,21 +325,16 @@ class TaskManager:
         # 'requested'（已送达，等结局）/ 'failed'（中断请求本身失败）/ 'not_running' / 'not_found'
         # 最终结局（已确认停止 / 停止前已完成 / 停止前已失败 / 未确认）随任务回报告知，见 4.2
     async def recover_after_restart(self):
-        # 非终态（queued / running / stopping）要么确认结束后结算，要么进入 orphaned，见下面“重启恢复”
+        # queued → interrupted；running / stopping → orphaned，不自动核对旧执行；见下面“重启恢复”
 ```
 
-- **重启恢复**：原则是**先确认执行真的结束，再结算；确认不了就不放行写任务。** “发过中断”不等于“已经停了”。
-  - queued：从没开始执行，直接记为 interrupted（重启前还没开始）。
-  - running、stopping 且有 Codex 的 `runtime_ref`：重新订阅该线程，调一次 `turn/interrupt`，然后通过 App Server 确认这一轮已经结束：收到这一轮的 `turn/completed`，或者查到线程里这一轮已不在进行中。具体用哪个方法查，以本机协议为准（13 节第 7 条）。确认后按实际状态结算：interrupted 时，原来是 running 的记为 interrupted、原来是 stopping 的记为 stopped；completed 记为 done，照常回报结果；failed 记为 failed。
-  - running、stopping 且有 Claude 的 `runtime_ref`：先核对进程归属，全部吻合才算“是我们的进程”。要核对的有：同一个 boot_id；pid 对应进程的启动时间与记录一致；cgroup 与记录一致；能读到 `/proc/<pid>/environ` 时，`QQ_TASK_NONCE` 也一致。
-    - pid 不存在，或者启动时间、boot_id 对不上：原进程已经退出（pid 可能被别的进程复用了），不发任何信号。再扫一遍 `/proc`，看有没有 pgid 相同、cgroup 相同、启动时间不早于原进程的残留子进程。没有，就算确认结束。
-    - 全部吻合：按 4.3 第 6 条的顺序发信号，直到这个进程组里没有进程了，才算确认结束。
-    - 只有部分吻合，或者信息读不全：不发信号，免得误杀，按“确认不了”处理。
-    - 进程已经结束时，拿不到这一轮的结局，原来是 running 的记为 interrupted，stopping 的记为 stopped。
-  - 确认不了（App Server 30 秒内查不到结果、连不上，或 Claude 进程归属判断不了）：任务记为 `orphaned`，不算终态。写任务的 orphaned 继续占着全局写锁，新的写任务排队，只读任务照常运行。立刻告诉主人：“#12 重启前在改文件，无法确认已经停下；确认前新的写任务会排队。”之后每 60 秒重查一次，确认结束就按上面的规则结算并释放写锁。
-  - 人工兜底：主人确认它已经结束（比如自己在终端查过），可以发 `/task release 12`，把任务记为 stopped，注明“主人确认已结束”，并释放写锁。
-  - systemd 服务默认（`KillMode=control-group`）停止时会清理同一 cgroup 里的子进程，所以 Claude 这条路平时很少走到，这里是兜底。
-  - 结算后的任务全部进入 6.3 的回报流程。
+- **重启恢复（PR3 简化版，主人于 2026-10-27 确认）**：
+  - queued：从未开始执行，直接记为 `interrupted`，通过回报流程通知主人。
+  - running、stopping：一律记为 `orphaned` 并通知主人；不自动确认结束，不查询旧进程或线程，不核对进程身份，不向旧执行端发信号，也不定期重查。
+  - 写任务的 orphaned 继续占着全局写锁，新的写任务排队。写权限以建任务时保存的 `tasks.writes` 为准，不能因重启后修改 profile 而放行旧写任务。
+  - 主人人工确认旧任务已结束后，在原会话发 `/task release 编号`，记为 `stopped`，注明“主人确认已结束”，释放执行锁并回报。其他会话、访客不能释放。
+  - 即使 systemd 通常会清理同 cgroup 子进程，也不据此自动解除旧任务占用。原自动恢复方案移至第 13 节，作为以后可选增强。
+  - 运行中若连接中断、取消或执行端无法证明结束，也采用 `orphaned` 保守保留锁；中断 RPC 的成功回执本身不算结束证明。
 
 - 任务对象挂在 Bridge 上，不挂在 `session()` 上：现在 worker 在 WebSocket 断开时会被取消，任务不能跟着断。
 - 回报时 QQ 恰好断线，就保留 `reported=0`，重连后补报。
@@ -451,14 +447,14 @@ Claude Code ──stdio──▶ python3 -m qq_chat.front_tools     （每轮由
 
 PR1（抽接口、不改既有单 Codex 行为）已完成，接口与保留语义见 `ARCHITECTURE.md`，以下为后续阶段。
 
-PR2（Claude 单 agent）已完成：本机复验、NONE/FULL 适配、按 profile 的会话与模型存储、历史预算及回复校验见第 0 节和第 14 节。尚未合并部署，需主人确认并在 QQ 验收通过后才进入 PR3。
+PR2（Claude 单 agent）已完成并通过主人 QQ 验收（2026-10-27）：旧行为正常，访客已切 Claude haiku，套设定和读文件请求均被拒绝。主人仍用 Codex。本机复验、历史预算及回复校验见第 0 节和第 14 节。
 
-**PR3：任务与命令（先手动分派）**
+**PR3：任务与命令（先手动分派）——实现完成，待主人确认合并及 QQ 验收**
 - `tasks.py`、`tasks` 表、`report_task()` 回报状态机、`deliver()` 抽取、会话锁（7 节的范围）、全局写锁、重启恢复（6.2），以及主人命令 `/task <目标>`、`/task release <编号>`、`/tasks`、`/stop [编号|all]`（BACKLOG #6）。
 - 分离模式下主人前台用 NONE 和手动版 `FRONT_DESK`（5 节）。
 - `AppServer.turn()` 把 interrupted 和 failed 区分开（4.2）。
 - `/stop` 的语义（顺带回答 BACKLOG #6 的待定项）：不带参数停当前会话正在跑的前台轮次；`/stop 12` 停单个任务；`/stop all` 停本会话所有运行中的任务，并取消排队中的任务。只作用于发起命令的会话。
-- 验收：任务运行期间前台照常回话；分离模式下主人前台不会自己改文件；任务结果只回发起会话；`/stop` 不排队，先回“已请求”，结局能区分已确认停止、停止前已完成、停止前已失败、未确认和停止失败；重启后 queued、running、stopping 确认结束才结算，确认不了就进入 orphaned 并挡住新的写任务，两种情况都通知主人；非主人用不了这些命令（静默）。
+- 验收：任务运行期间前台照常回话；分离模式下主人前台不会自己改文件；任务结果只回发起会话；`/stop` 不排队，先回“已请求”，结局能区分已确认停止、停止前已完成、停止前已失败、未确认和停止失败；重启后 queued 直接记为 interrupted，running、stopping 一律记为 orphaned 并通知主人；写任务继续占锁，直到主人 /task release；不做自动核对或恢复；非主人用不了这些命令（静默）。
 - 做到这一步，前后台分离已经能从 QQ 用起来了，PR4 只是把“主人手动分派”换成“前台自己判断”。
 
 **PR4：前台工具通道**
@@ -474,7 +470,7 @@ PR2（Claude 单 agent）已完成：本机复验、NONE/FULL 适配、按 profi
 全部离线，沿用 `Bridge.__new__(Bridge)` 的写法，另加一个 `FakeAgent`：记录收到的 `TurnRequest`，用 `asyncio.Event` 控制何时返回。
 
 - `build_agents`：无 `agents` 配置等价现状；引用不存在的 profile 时拒绝启动。
-- 级别：访客永远 NONE；单 agent 主人是 FULL；分离模式主人是 FRONT；昵称、正文里自称主人都不改变级别。
+- 级别：访客永远 NONE；单 agent 主人是 FULL；分离模式主人在 PR3 是 NONE、PR4 起是 FRONT；昵称、正文里自称主人都不改变级别。
 - `ClaudeCodeAgent`：用录制好的 jsonl（本次实测输出可以直接存成测试数据，记得去掉会话 ID）喂一个假子进程，断言参数里有 `--tools ""`、`--no-chrome`、`--system-prompt-snapshot off`，访客没有 `--mcp-config`；`init.tools` 出现多余工具时抛异常并发出 SIGINT。
 - 并发：后台 FakeAgent 卡住时，前台仍能完成新一轮；同一会话两轮严格串行。
 - 工具通道：过期令牌、伪造令牌、访客会话来源一律拒绝；`dispatch_task` 参数里塞别的会话键不起作用。
@@ -482,8 +478,7 @@ PR2（Claude 单 agent）已完成：本机复验、NONE/FULL 适配、按 profi
 - 级别：FULL 的 `init.tools` 出现 `mcp__qq__*` 时中止；FULL 的 profile 没写 `permission_mode` 时拒绝启动。
 - 写锁：两个不同 profile 的写任务不会同时运行；只读 profile 不受影响。`writes` 声明与 sandbox 不符时拒绝启动。
 - 中断结局：假 App Server 分别返回 interrupted、completed、failed 和超时，任务分别落到 stopped、done、failed 和 stopping；中断 RPC 报错时回到 running，`/stop` 回复“停止失败”。
-- 重启恢复（Codex）：假 App Server 确认结束时，queued、running、stopping 分别变成 interrupted、interrupted、stopped；确认时发现这一轮其实已 completed，就记为 done；查询超时时变成 orphaned，新的写任务排队、只读任务照常运行，之后确认结束再结算并放行；`/task release` 能人工释放。
-- 重启恢复（Claude）：用假的 `/proc` 数据分别模拟 pid 不存在、pid 被复用（启动时间不同）、全部吻合、只有部分吻合四种情况。断言只有“全部吻合”时才发信号；部分吻合时不发信号，并进入 orphaned。
+- 重启恢复（PR3 简化版）：queued → interrupted，running/stopping → orphaned；断言不访问旧执行端、不查进程身份、不发旧进程信号，不自动重查。写 orphaned 持续阻塞跨 profile 写任务，只读任务不受全局写锁影响；仅原会话 /task release 能人工释放。创建时保存 writes，修改 profile 不能抹掉旧任务的写占用。
 - 阶段衔接：分离模式且工具通道不可用时，主人前台的 level 是 NONE。
 - 模型隔离：Codex 的模型选择不会传给 Claude profile，反之亦然。
 - `/stop`：在 `session()` 里处理，不进队列；非主人静默。
@@ -500,8 +495,26 @@ PR2（Claude 单 agent）已完成：本机复验、NONE/FULL 适配、按 profi
 4. Codex App Server 有没有中途追加消息的接口（决定 `send_to_task` 的实现）；Codex 在分离模式下当前台时，能否通过 `thread/start` 的 `config` 挂 MCP。
 5. 换成 Claude 前台后，人设的表现要重新调：被认真问到“你是不是 AI”时的反应、语气、长度控制都会和 Codex 不同。
 6. 多个写任务同时改同一仓库：目前靠第 5 节的全局写锁（`tasks.max_writers`，默认 1）串行执行，以后按任务开 git worktree 再放开。
-7. 中断的实际表现：Claude 被 SIGINT 后 `result` 的 subtype 和退出码（决定 4.3 第 6 条的判定规则）；本机 App Server 的 turn 状态取值（4.2 的表）；重启后用哪个方法确认某一轮已经结束（6.2）。
+7. 中断的实际表现：Claude 被 SIGINT 后 `result` 的 subtype 和退出码（决定 4.3 第 6 条的判定规则）；本机 App Server 的 turn 状态取值（4.2 的表）；自动重启恢复不在 PR3 范围，见下方可选增强。
 8. PR4 前验证无 safe-mode 的 FRONT 是否加载用户 hooks、插件、skills。会加载则采用独立配置目录并由主人单独登录；不能因 init.tools 为空就认为所有自定义行为都关闭。
+
+### 可选增强：自动确认旧执行结束（移自原 6.2，PR3 不实现）
+
+以下为原方案，仅保留供以后评估，不是当前验收条件。实现前重新验证 App Server 协议及进程安全边界。
+
+- **重启恢复**：原则是**先确认执行真的结束，再结算；确认不了就不放行写任务。** “发过中断”不等于“已经停了”。
+  - queued：从没开始执行，直接记为 interrupted（重启前还没开始）。
+  - running、stopping 且有 Codex 的 `runtime_ref`：重新订阅该线程，调一次 `turn/interrupt`，然后通过 App Server 确认这一轮已经结束：收到这一轮的 `turn/completed`，或者查到线程里这一轮已不在进行中。具体用哪个方法查，以本机协议为准（13 节第 7 条）。确认后按实际状态结算：interrupted 时，原来是 running 的记为 interrupted、原来是 stopping 的记为 stopped；completed 记为 done，照常回报结果；failed 记为 failed。
+  - running、stopping 且有 Claude 的 `runtime_ref`：先核对进程归属，全部吻合才算“是我们的进程”。要核对的有：同一个 boot_id；pid 对应进程的启动时间与记录一致；cgroup 与记录一致；能读到 `/proc/<pid>/environ` 时，`QQ_TASK_NONCE` 也一致。
+    - pid 不存在，或者启动时间、boot_id 对不上：原进程已经退出（pid 可能被别的进程复用了），不发任何信号。再扫一遍 `/proc`，看有没有 pgid 相同、cgroup 相同、启动时间不早于原进程的残留子进程。没有，就算确认结束。
+    - 全部吻合：按 4.3 第 6 条的顺序发信号，直到这个进程组里没有进程了，才算确认结束。
+    - 只有部分吻合，或者信息读不全：不发信号，免得误杀，按“确认不了”处理。
+    - 进程已经结束时，拿不到这一轮的结局，原来是 running 的记为 interrupted，stopping 的记为 stopped。
+  - 确认不了（App Server 30 秒内查不到结果、连不上，或 Claude 进程归属判断不了）：任务记为 `orphaned`，不算终态。写任务的 orphaned 继续占着全局写锁，新的写任务排队，只读任务照常运行。立刻告诉主人：“#12 重启前在改文件，无法确认已经停下；确认前新的写任务会排队。”之后每 60 秒重查一次，确认结束就按上面的规则结算并释放写锁。
+  - 人工兜底：主人确认它已经结束（比如自己在终端查过），可以发 `/task release 12`，把任务记为 stopped，注明“主人确认已结束”，并释放写锁。
+  - systemd 服务默认（`KillMode=control-group`）停止时会清理同一 cgroup 里的子进程，所以 Claude 这条路平时很少走到，这里是兜底。
+  - 结算后的任务全部进入 6.3 的回报流程。
+
 
 ## 附录 A：实测用的最小 MCP 服务器
 
@@ -611,3 +624,20 @@ v1 交给 Codex 对照代码审阅后，以下意见全部采纳：
 - 缺失会话只在 CLI 明确未执行的条件下重建一次；同会话运行串行，取消和超时清理进程组及临时文件。共享访客提示显式保留数学授权、复杂题预算和 QQ 消息格式约束，不依赖 Claude 自动加载 AGENTS。
 - 所有 profile 的新会话历史导入统一限制为最近 20 条、JSON 序列化后 8000 字、单条 1000 字，不删除原始记录。这是 PR2 有意的行为变化。
 - 全量 126 项离线测试通过，包含原有覆盖、FakeAgent、脱敏真实 JSONL、配置/存储隔离及错误路径；语法检查和格式检查通过。本机 CLI 复验见第 0 节。本轮未合并、未修改运行配置、未重启桥接，未开始 PR3。
+
+### PR2 验收与 PR3 范围调整（2026-10-27）
+
+- 主人确认 PR2 验收通过：旧行为正常，访客已切 Claude haiku，套设定和读文件请求均被拒绝；可以开始 PR3。
+- 主人明确简化重启善后：queued 直接 interrupted；running、stopping 一律 orphaned 并通知；写 orphaned 继续占全局写锁，只靠原会话 `/task release` 人工释放。不做自动确认结束、进程身份核对或周期重查。6.2 为当前规则，原方案保留在 13 节作为以后可选增强；第三轮 v4 表格只记录历史决策，不代表现在要实现自动恢复。
+
+### PR3 实现细节与完成记录
+
+- 新增 `tasks.py` 与 `task_commands.py`：分别负责执行调度/存储和 QQ 命令/回报，避免把任务状态机全部堆进 Bridge。tasks 表初始化由 Bridge 构造 TaskManager 时完成，沿用 CREATE IF NOT EXISTS/字段迁移。
+- 本阶段 back 最多一个 profile、每个 profile 并发为 1、全局写任务为 1；多后台及更高只读并发留在 PR5。全局锁仍按跨 profile 的占用检查实现并用 FakeAgent 验证。
+- `writes` 建任务时冻结到 tasks 表，未知旧任务保守按写任务处理，防止配置修改绕开 orphaned 的锁。Claude FULL 可能加载用户 MCP，PR3 对其后台保守要求 writes=true；Codex 只读后台须明确 sandbox=read-only 且 writes=false。
+- queued 计入 max_running/max_per_conversation 的接纳上限，容量满立即报错。超时发送中断请求，执行未确认结束仍占锁；RPC 失败回 running；收到实际结果再按 stopped/done/failed 结算。连接不确定时 orphaned，不把“断线”误当失败后放锁。
+- 后台不读 SOUL/OWNER 或聊天历史，仅用自足任务目标、WORKER 和项目规则；Codex 每个任务新建持久线程，tasks.session_id 记录，不改主人 threads 映射。Claude 后台沿用 FULL 参数，正常加载项目规则。
+- 会话锁覆盖 chat、模型/强度命令、/new 与回报，并持续到正常回复历史交付完成。/stop、/tasks 在 session 直接创建协程，访客静默；后台生命周期独立于 WebSocket session，QQ 断线不取消后台。
+- 回报先存 report_text 再交付；补发不重复调用模型，失败降级使用真实任务状态。回报轮次 NONE、无流式或派发工具；系统回报首行保持在历史导入之前。orphaned 警告由桥接固定文字生成，避免模型弱化锁与人工释放要求。
+- 手动 /task 的回执由桥接直接发送；不提前实现 PR4 工具通道。任务结果仅回原会话，/new 保留任务并告知未结算数量，结果进入新一代会话。
+- 代码与离线测试完成；未合并、未修改运行配置、未重启，不开始 PR4。测试数量与检查结果见本提交 CHANGELOG。
