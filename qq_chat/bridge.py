@@ -614,7 +614,7 @@ class Bridge(TaskCommands):
                         continue
                     await self.send(source, '已加入群聊用户黑名单。' if parts[0] == '/block' else '已解除群聊用户拉黑。')
                 elif text == "/help":
-                    await self.send(source, "Aemeath：主人在私聊或群聊可请求Linux操作，其他人仅文字聊天；Windows文件只读。群聊需@机器人并附文字或图片，或喊Aemeath、爱弥斯、ams、小爱（英文不分大小写）。图片识别仅主人可用，每条最多5张、每张20 MiB，支持PNG、JPEG、WebP、GIF。文件附件仅主人私聊接收。/ping、/help 所有人可用；/new 创建新会话、/session 查看会话ID、/models 查看可选模型、/model 查看当前模型、/model 模型名 切换、/model default 恢复默认、/effort 查看强度、/effort 档位 切换强度、/effort default 恢复模型默认强度、/task 完整目标 手动交给后台、/task release 编号 人工释放待确认任务、/tasks 查看当前会话任务、/stop 停前台、/stop 编号 停任务、/stop all 停本会话全部后台任务、/blacklist 查看群聊用户黑名单、/block QQ号 拉黑、/unblock QQ号 解除拉黑仅限主人。黑名单用户的群消息静默忽略。")
+                    await self.send(source, "Aemeath：主人在私聊或群聊可请求Linux操作，其他人仅文字聊天；Windows文件只读。群聊需@机器人并附文字或图片，或喊Aemeath、爱弥斯、ams、小爱（英文不分大小写）。图片识别仅主人可用，每条最多5张、每张20 MiB，支持PNG、JPEG、WebP、GIF。文件附件仅主人私聊接收。/ping、/help 所有人可用；/new 创建新会话、/session 查看会话ID、/models 查看可选模型、/model 查看当前模型、/model 模型名 切换、/model default 恢复默认、/effort 查看强度、/effort 档位 切换强度、/effort default 恢复模型默认强度、/task 完整目标 手动交给后台、/task check 编号 只查一次执行状态、/task release 编号 人工释放待确认任务、/tasks 查看当前会话任务、/stop 停前台、/stop 编号 停任务、/stop all 停本会话全部后台任务、/blacklist 查看群聊用户黑名单、/block QQ号 拉黑、/unblock QQ号 解除拉黑仅限主人。黑名单用户的群消息静默忽略。")
                 elif len(text) > 6000:
                     await self.send(source, "这条消息较长，请拆成每条不超过6000字。")
                 else:

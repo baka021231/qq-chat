@@ -449,7 +449,7 @@ PR1（抽接口、不改既有单 Codex 行为）已完成，接口与保留语�
 
 PR2（Claude 单 agent）已完成并通过主人 QQ 验收（2026-10-27）：旧行为正常，访客已切 Claude haiku，套设定和读文件请求均被拒绝。主人仍用 Codex。本机复验、历史预算及回复校验见第 0 节和第 14 节。
 
-**PR3：任务与命令（先手动分派）——实现完成，待主人确认合并及 QQ 验收**
+**PR3：任务与命令（先手动分派）——已合并并通过主人全部 QQ 验收**
 - `tasks.py`、`tasks` 表、`report_task()` 回报状态机、`deliver()` 抽取、会话锁（7 节的范围）、全局写锁、重启恢复（6.2），以及主人命令 `/task <目标>`、`/task release <编号>`、`/tasks`、`/stop [编号|all]`（BACKLOG #6）。
 - 分离模式下主人前台用 NONE 和手动版 `FRONT_DESK`（5 节）。
 - `AppServer.turn()` 把 interrupted 和 failed 区分开（4.2）。
@@ -641,3 +641,11 @@ v1 交给 Codex 对照代码审阅后，以下意见全部采纳：
 - 回报先存 report_text 再交付；补发不重复调用模型，失败降级使用真实任务状态。回报轮次 NONE、无流式或派发工具；系统回报首行保持在历史导入之前。orphaned 警告由桥接固定文字生成，避免模型弱化锁与人工释放要求。
 - 手动 /task 的回执由桥接直接发送；不提前实现 PR4 工具通道。任务结果仅回原会话，/new 保留任务并告知未结算数量，结果进入新一代会话。
 - 代码与离线测试完成；未合并、未修改运行配置、未重启，不开始 PR4。测试数量与检查结果见本提交 CHANGELOG。
+
+### PR4 开工前的主人决定（2026-10-27）
+
+- 主人确认 PR3 全部验收通过，授权在 front-back-pr4 开始 PR4，未确认合并前不部署。部署目标为主人 Claude sonnet FRONT、访客 haiku、后台 codex，当前运行配置不改。
+- 单独提交 PR3 小修复：排队任务停止直接确认未执行取消；新增 /task check 编号，向 Codex 仅查一次该任务轮次是否运行，不重试、不自动释放。不改变 6.2 的保守恢复规则；orphaned 警告明确核实该轮和遗留命令后才 release。未知或多轮归属不清不报已结束。
+- 本机 thread/read(includeTurns=true) 协议与已完成任务只读探针已验证；159 项离线测试通过。
+- 开工前验证无 safe-mode 的 FRONT 对 hooks、插件和 skills 的隔离，若会加载改用独立 CLAUDE_CONFIG_DIR，需要登录时由主人终端登录，不复制或读取凭据。
+- 使用 debug-file 以及 DISABLE_AUTOUPDATER=1、CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 各三次调查启动耗时；仅测试和汇报，不更改运行配置。

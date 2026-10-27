@@ -65,7 +65,7 @@ class CommandAuthTests(unittest.IsolatedAsyncioTestCase):
     async def test_task_commands_from_guests_are_silent_and_do_not_touch_state(self):
         before = self.snapshot()
         for source in (Source('group', 999, 789, '主人'), Source('private', 789, 789)):
-            for command in ('/task edit file', '/task release 1', '/tasks', '/stop', '/stop all', '/STOP 1'):
+            for command in ('/task edit file', '/task release 1', '/task check 1', '/tasks', '/stop', '/stop all', '/STOP 1'):
                 await self.dispatch(source, command)
                 self.assertEqual(self.sent, [])
                 self.assertEqual(self.snapshot(), before)

@@ -226,6 +226,33 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.row(one)['status'], 'orphaned')
         self.assertEqual(self.row(two)['status'], 'done')
 
+    async def test_stop_queued_reply_does_not_claim_waiting_for_execution(self):
+        await self.create(); await self.until(lambda: self.back.requests)
+        queued = await self.create('queued')
+        await self.bridge.fast_command(self.owner, f'/stop {queued}')
+        self.assertTrue(any('已取消（还在排队，未开始执行）' in text for _, text in self.sent))
+        self.assertFalse(any('等待执行端确认' in text for _, text in self.sent))
+
+    async def test_task_check_queries_once_and_never_changes_status_or_lock(self):
+        ident = await self.create(); await self.until(lambda: self.back.requests)
+        self.bridge.tasks._set(ident, status='orphaned')
+        calls = []
+        async def check(session, ref): calls.append(session); return 'completed'
+        self.back.check_execution = check
+        before = self.row(ident)
+        await self.bridge.task_command(self.owner, f'/task check {ident}')
+        self.assertEqual(calls, [before['session_id']])
+        self.assertEqual(self.row(ident), before)
+        self.assertTrue(any('已完成' in text and '锁均未改变' in text for _, text in self.sent))
+        with self.assertRaises(ValueError):
+            await self.bridge.tasks.check(self.bridge.conversation(self.group), ident)
+        self.assertEqual(len(calls), 1)
+        async def failure(session, ref): calls.append(session); raise RuntimeError('disconnected')
+        self.back.check_execution = failure
+        self.assertEqual(await self.bridge.tasks.check(before['conversation'], ident), 'unknown')
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.row(ident), before)
+
     async def test_stop_queued_never_executes_and_cannot_cross_conversations(self):
         one = await self.create()
         await self.until(lambda: self.back.requests)

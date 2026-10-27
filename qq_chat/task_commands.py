@@ -105,7 +105,9 @@ class TaskCommands:
                             # Recovery warnings must be deterministic and never minimized by a model.
                             text = (f"【任务#{ident} 执行状态待确认】重启或连接中断前的执行未结算。"
                                     + ('新的写任务会排队。' if row['writes'] else '')
-                                    + f'请先人工确认已结束，再用 /task release {ident} 释放。')
+                                    + f'可用 /task check {ident} 向 Codex 只查一次执行状态；查询不会释放锁。'
+                                    + '请确认该轮已结束且没有遗留写文件的命令；查不到时需在终端人工核实。'
+                                    + f'确认后再用 /task release {ident} 释放。')
                         else:
                             try:
                                 request = await self.turn_request(source, True)
@@ -149,7 +151,16 @@ class TaskCommands:
             return
         parts = text.split(maxsplit=2)
         try:
-            if len(parts) >= 2 and parts[1] == 'release':
+            if len(parts) >= 2 and parts[1] == 'check':
+                if len(parts) != 3 or not parts[2].isdigit():
+                    raise ValueError('用法：/task check 编号；只查一次，不自动释放锁')
+                ident = int(parts[2])
+                status = await self.tasks.check(self.conversation(source), ident)
+                label = {'inProgress': 'Codex 确认该轮仍在运行', 'completed': 'Codex 确认该轮已完成',
+                         'interrupted': 'Codex 确认该轮已中断', 'failed': 'Codex 确认该轮已失败',
+                         'unknown': '未能确认该轮状态，请在终端人工核实，勿据此释放锁'}[status]
+                await self.send(source, f'【任务#{ident} 查询】{label}。仅查询一次，任务状态和锁均未改变；确认该轮及遗留命令都已结束后再人工 release。')
+            elif len(parts) >= 2 and parts[1] == 'release':
                 if len(parts) != 3 or not parts[2].isdigit():
                     raise ValueError('用法：/task release 编号；仅在你确认旧任务已结束后使用')
                 await self.tasks.release(self.conversation(source), int(parts[2]))
@@ -209,6 +220,10 @@ class TaskCommands:
                 if row and row['status'] == 'queued':
                     await self.tasks.stop(key, ident)
                     cancelled.add(ident)
+            for ident in cancelled:
+                await self.send(source, f'【任务#{ident}】已取消（还在排队，未开始执行）')
+            if len(cancelled) == len(ids):
+                return
             await self.send(source, '已请求停止后台任务，等待执行端确认。')
             for ident in ids:
                 if ident in cancelled:

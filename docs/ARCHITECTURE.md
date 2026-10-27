@@ -180,3 +180,5 @@ python3 -m unittest discover -s tests -v
 会话锁按 conversation key 建立，对同一 asyncio task 可重入；chat、模型/强度命令、/new、回报均持锁，worker 持锁直到交付和历史落库。前台与回报不会并发操作同一线程。控制命令和后台调度不取会话锁。
 
 回报还有独立的 task id 锁，避免完成与重连补报同时重复生成/发送。先在会话锁内用前台 CHAT/NONE 生成非流式文字并持久化 report_text；失败使用真实状态的降级摘要；orphaned 始终由桥接固定警告。再由 deliver 走原发送/语音/历史路径，所有 OneBot 气泡确认成功才记 reported=1；已有文字补发不调用模型。/new 不取消任务，回报时重新取当前线程；系统回报首行先于历史参考，防止被导入包装遮住。部分气泡成功后断线可能补发重复，采用至少一次交付。
+
+PR4 前置小修复：TaskManager.check 按原会话校验，再调用 CodexAgent.check_execution，只发一次 thread/read(includeTurns=true)，10 秒超时不重试。PR3 每个任务仅一轮；缺少精确 turn_id 且返回多轮时未知，不误判其他轮次。查询不改变状态或锁。orphaned 固定通知说明 check、终端核实及人工 release。排队取消直接说明未执行。

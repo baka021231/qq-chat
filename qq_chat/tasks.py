@@ -217,6 +217,20 @@ class TaskManager:
             with contextlib.suppress(Exception):
                 await self.bridge.send(Source(**json.loads(row['source'])), f'【任务#{ident}】停止尚未确认，继续等待；执行锁仍保留。')
 
+    async def check(self, conversation, ident):
+        row = self.status(conversation, ident)
+        if not row:
+            raise ValueError('当前会话没有该任务')
+        agent = self.bridge.agents.get(row['agent'])
+        check = getattr(agent, 'check_execution', None)
+        if not check or not row['session_id']:
+            return 'unknown'
+        try:
+            ref = json.loads(row['runtime_ref']) if row['runtime_ref'] else None
+            return await asyncio.wait_for(check(row['session_id'], ref), 10)
+        except (RuntimeError, OSError, ValueError, asyncio.TimeoutError):
+            return 'unknown'
+
     async def release(self, conversation, ident):
         row = self.status(conversation, ident)
         if not row or row['status'] != 'orphaned':
