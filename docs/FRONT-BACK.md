@@ -2,6 +2,8 @@
 
 本文是 `qq-chat` 前后台分离的实施方案，基于 `65361f4`（2026-10-27）的代码。可以放进 `docs/`，按第 11 节分阶段实现；每个阶段完成后，把对应内容写进 `docs/FEATURES.md`、`docs/ARCHITECTURE.md` 和 `docs/CHANGELOG.md`，本文只保留未完成部分。
 
+v2：已按 2026-10-27 的代码审阅意见修订，改动对照见第 14 节。
+
 ## 0. 结论
 
 可以做，工作量中等。接入 Claude Code 本身不难，第 4 节的调用方式已经实测可用。真正要花时间的是三件事：调度从“单 worker 串行”改成“前台不等后台”、任务的中断与回报、前台调用工具的权限通道。
@@ -11,7 +13,7 @@
 - 和 Codex 有关的逻辑集中在 `thread_for()`、`run_turn()`、`model_command()`/`effort_command()`，外加 `run()` 里的一次 `self.app.start()`。抽出一层接口就能把具体 agent 换掉。
 - `AppServer.turn()` 按 `threadId` 分发事件，一条 App Server 连接上本来就能同时跑多个 Codex 线程。所以“后台多 agent”不需要新增 Codex 进程。
 
-### 已实测（Claude Code 2.1.311，云端 Linux 容器，haiku）
+### 已实测（Claude Code 2.1.311，云端 Linux 容器，haiku；尚未在 WSL 复验，PR2 第一步复验）
 
 - 用 `--tools ""` 关掉全部内置工具，再挂一个自己写的 MCP 服务器（附录 A），前台能正确调用 `dispatch_task`，`goal` 写得完整，`result` 只包含最终那段话。
 - `--session-id <uuid>` 新建会话、`--resume <uuid>` 续接，都能接上上下文。`--setting-sources project` 下订阅登录照常可用。
@@ -57,7 +59,7 @@
 | `threads` 表 | 会话键 → Codex 线程 | 保留给 codex 前台；新表 `agent_sessions` 存其他 profile |
 | `AppServer.turn()` | `turn_id` 是局部变量 | 记到 `self.active_turns[thread]`，供 `interrupt()` 使用 |
 
-一条原则：**agent 只产出文字。** 截断、拉黑标记、数字过多拒绝、语音、发送节奏都留在 Bridge，换 agent 不影响这些策略。
+一条原则：**agent 只产出文字。** 面向 QQ 的策略（群友 500 字截断、数字过多拒绝、拉黑标记、语音、发送节奏）都留在 Bridge，换 agent 不影响。唯一的例外是返回值上限：`run()` 返回的完整回复最多 12000 字（`agents/base.py` 的 `MAX_REPLY`），由各适配器负责。这个截断现在在 `AppServer.turn()` 里，PR1 原样留在 CodexAgent，不改语义；流式发送不受这个上限影响。
 
 ## 3. 总体结构
 
@@ -87,14 +89,17 @@ NapCat ─▶ Bridge.session() ──(/stop、/tasks 直接处理)
 from dataclasses import dataclass
 from typing import Callable
 
-NONE, FRONT, FULL = 'none', 'front', 'full'   # 权限级别
+NONE, FRONT, FULL = 'none', 'front', 'full'   # 权限级别：只决定工具和 sandbox
+CHAT, TASK = 'chat', 'task'                   # 角色：只决定用哪套指令
+MAX_REPLY = 12000                             # run() 返回值上限
 
 @dataclass
 class TurnRequest:
     key: str                  # 会话键，如 "private:<QQ>"、"group:<群>:owner"，或 "task:12"
     text: str                 # turn_text() 拼好的本轮输入
-    instructions: str         # 前台人设或后台 WORKER 指令
-    level: str                # NONE 访客 / FRONT 分离模式主人前台 / FULL 单 agent 主人或后台任务
+    role: str                 # CHAT 前台对话 / TASK 后台任务
+    level: str                # NONE / FRONT / FULL，由 Bridge 决定
+    instructions: str         # Bridge 按 role 组装好的指令全文
     images: tuple = ()
     model: str | None = None
     effort: str | None = None
@@ -111,6 +116,18 @@ class Agent:
     async def models(self) -> list[dict]: ...             # /model 用
     async def close(self): ...
 ```
+
+权限和角色是两个独立的维度：
+
+| 场景 | role | level | 指令 |
+| --- | --- | --- | --- |
+| 群友、白名单访客 | CHAT | NONE | `GUEST`（群聊再加 `GROUP_MODERATION`） |
+| 主人，单 agent 模式 | CHAT | FULL | `OWNER` + SOUL.md + OWNER.md |
+| 主人，分离模式 | CHAT | FRONT | 同上，再加 `FRONT_DESK` |
+| 任务回报轮次（6.3） | CHAT | NONE | 同上一行，但不能分派 |
+| 后台任务 | TASK | FULL | `WORKER` |
+
+level 和“是不是主人”也是两回事：回报轮次属于主人会话，用主人人设，但 level 是 NONE。Bridge 的发送策略只看 `owner_request()`，不看 level。
 
 `build_agents(cfg)` 按 `profiles[*].type` 实例化：`codex_app` → `CodexAgent`，`claude_code` → `ClaudeCodeAgent`。多个 `codex_app` profile 共用一个 `AppServer` 实例，因为连的是同一个守护进程。
 
@@ -140,14 +157,19 @@ BASE_ARGS = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-j
              '--disable-slash-commands', '--no-chrome', '--permission-prompts', 'none']
 
 def level_args(level, grant, profile):
+    """返回 (参数, init.tools 校验函数)。"""
     if level == NONE:
         return ['--tools', '', '--strict-mcp-config', '--disallowedTools', 'mcp__*',
-                '--permission-mode', 'dontAsk'], set()
+                '--permission-mode', 'dontAsk'], lambda tools: not tools
     if level == FRONT:
         return ['--tools', '', '--strict-mcp-config', '--mcp-config', grant.config_path,
-                '--allowedTools', 'mcp__qq__*', '--permission-mode', 'dontAsk'], FRONT_TOOLS
+                '--allowedTools', 'mcp__qq__*', '--permission-mode', 'dontAsk'], \
+               lambda tools: set(tools) <= FRONT_TOOLS
+    # FULL：permission_mode 必须在 profile 里显式写（启动时校验，缺了拒绝启动）；
+    # 永远不挂 qq 工具，防止工人自己再派任务
     return ['--tools', profile.get('tools', 'default'),
-            '--permission-mode', profile.get('permission_mode', 'dontAsk')], None  # None：不校验
+            '--permission-mode', profile['permission_mode']], \
+           lambda tools: not any(t.startswith('mcp__qq__') for t in tools)
 
 def user_message(text, images):
     content = [{'type': 'text', 'text': text}]
@@ -160,14 +182,14 @@ def user_message(text, images):
 `run()` 的要点：
 
 1. **会话 ID**：首轮由桥接生成 `uuid4`，先写入 `agent_sessions`，再用 `--session-id` 启动；之后用 `--resume`。续接失败（会话文件丢失）时清掉映射重开，同现在处理 `no rollout found` 的方式一样。
-2. **系统提示**：前台（NONE/FRONT）用 `--system-prompt-file` 替换默认提示，提示更短，也没有“我是 Claude Code”的身份；后台任务（FULL）用 `--append-system-prompt-file`，保留 Claude Code 自带的编码规范。提示文件写在 `run/` 下，权限 600。**不要用 `--system-prompt` 直接传文字**：命令行参数在 `ps` 里所有本机用户都能看到，而 OWNER.md 里有个人资料。
+2. **系统提示**：怎么写看 level，写什么看 role（4.1）。NONE 和 FRONT 没有内置工具，用 `--system-prompt-file` 整个替换默认提示，提示更短，也没有“我是 Claude Code”的身份。FULL 要用工具，不管是单 agent 的主人对话还是后台任务，都用 `--append-system-prompt-file` 追加，保留 Claude Code 自带的工具用法说明。提示文件写在 `run/` 下，权限 600。**不要用 `--system-prompt` 直接传文字**：命令行参数在 `ps` 里所有本机用户都能看到，而 OWNER.md 里有个人资料。
 3. **工作目录**：用桥接专用的空目录（如 `run/front/`）。不加 `--bare` 时，`-p` 会执行 cwd 里 `.claude/settings.json` 的 hooks，连接 `.mcp.json`，而且没有信任提示。所以前台不能用 `workspace/` 或任何仓库当 cwd。
 4. **子进程**：`asyncio.create_subprocess_exec(..., limit=16 * 1024 * 1024, start_new_session=True)`。默认 64KB 的行长上限遇到大段工具结果会报错。
 5. **事件处理**：
 
    | 事件 | 处理 |
    | --- | --- |
-   | `system` / `init` | 校验 `tools`：NONE 必须为空，FRONT 必须是 `FRONT_TOOLS` 的子集，否则发 SIGINT 并抛 `UnexpectedTools`（fail closed） |
+   | `system` / `init` | 用 `level_args` 返回的函数校验 `tools`：NONE 必须为空，FRONT 必须是 `FRONT_TOOLS` 的子集，FULL 不能含 `mcp__qq__*`。不通过就发 SIGINT 并抛 `UnexpectedTools`（fail closed） |
    | `stream_event`，`content_block_delta` 且 `delta.type == 'text_delta'` | `on_answer(delta.text)`，只取 `parent_tool_use_id` 为空的事件 |
    | `stream_event`，`content_block_start` 且块类型为 `tool_use` | 可选：`on_progress('⏳ 派发任务')` 之类 |
    | `assistant` 中的 `thinking` 块 | 忽略 |
@@ -191,15 +213,16 @@ def user_message(text, images):
                     "max_turns": 6, "models": ["haiku", "sonnet", "opus"]},
     "claude-chat": {"type": "claude_code", "path": "claude", "model": "haiku", "max_turns": 2},
     "codex":       {"type": "codex_app", "path": "/home/<user>/.local/bin/codex",
-                    "sandbox": "danger-full-access", "max_parallel": 1,
+                    "sandbox": "danger-full-access", "writes": true, "max_parallel": 1,
                     "description": "能改文件、跑命令的主力"},
     "codex-ro":    {"type": "codex_app", "path": "/home/<user>/.local/bin/codex",
-                    "sandbox": "read-only", "max_parallel": 3,
+                    "sandbox": "read-only", "writes": false, "max_parallel": 3,
                     "description": "只读调研、读代码、查资料，可并行"}
   }
 },
 "tasks": {
   "max_running": 4,
+  "max_writers": 1,
   "max_per_conversation": 3,
   "timeout_minutes": 60,
   "progress": "direct",
@@ -216,7 +239,9 @@ def user_message(text, images):
 - `tasks.progress`：`direct` 把后台进度节流后直接发到 QQ；`silent` 不推送，只在前台调用 `task_status` 时返回。主人在群里的任务建议用 `silent`。
 - 启动时校验：`front`、`guest` 和 `back` 引用的 profile 必须存在，`type` 必须已知，否则拒绝启动并打印原因。
 - 改了配置用 `tools/restart_bridge.py` 重启。运行时切换（`/front claude`）可以以后再加，写回配置沿用 `moderation.update_blacklist()` 的加锁原子替换方式。
-- 切换前台以后，新 profile 没有旧对话的上下文。现有的 `history_import` 正好能用：新会话第一轮把 `history` 表里最近几轮带上（`bootstrap` 表按新的 session ID 记录）。
+- 后台 profile 必须显式写 `writes`。Codex 的 `sandbox` 不是 `read-only` 时，`writes` 必须为 true；Claude 的 FULL 工具里有 Bash、Edit 或 Write 时也必须为 true。声明与实际不符就拒绝启动。所有 `writes: true` 的 profile 共用一个全局写锁（`tasks.max_writers`，默认 1），和各自的 `max_parallel` 同时满足才能开工。等以后做了按任务开 git worktree，再放开这个限制。
+- 切换前台以后，新 profile 没有旧对话的上下文。新会话第一轮从 `history` 表带上最近的记录：从新往旧取，最多 20 条、总共 8000 字，单条超过 1000 字截断（`bootstrap` 表按新的 session ID 记录）。注意现在的 `history_import` 导入的是全部历史：PR1 不动它，PR2 改成上面的预算，对所有 profile 一致（包括 Codex 新开的线程，属于行为变化，要写进 CHANGELOG）。
+- 模型选择按“会话 + profile”保存（6.1 的 `profile_models`），一个 profile 永远拿不到另一个 profile 的模型名。
 
 同时更新 `config.example.json` 和 README 的配置表。
 
@@ -228,6 +253,10 @@ def user_message(text, images):
 CREATE TABLE IF NOT EXISTS agent_sessions (
   conversation TEXT, profile TEXT, session_id TEXT,
   PRIMARY KEY (conversation, profile));
+CREATE TABLE IF NOT EXISTS profile_models (
+  conversation TEXT, profile TEXT, model TEXT, effort TEXT,
+  PRIMARY KEY (conversation, profile));
+-- PR2 迁移：conversation_models 的旧记录复制进 profile_models，profile 记为默认的 codex profile
 CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   conversation TEXT NOT NULL,     -- 发起任务的会话键，结果只回这里
@@ -236,7 +265,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   goal TEXT NOT NULL,
   status TEXT NOT NULL,           -- queued / running / stopping / done / failed / stopped / interrupted
   created REAL, started REAL, finished REAL,
-  result TEXT, error TEXT, reported INTEGER DEFAULT 0);
+  result TEXT, error TEXT,
+  report_text TEXT,               -- 要发给 QQ 的回报文字（6.3）
+  reported INTEGER DEFAULT 0);
 ```
 
 ### 6.2 `TaskManager`（`qq_chat/tasks.py`）
@@ -248,8 +279,9 @@ class TaskManager:
         # 2. 检查 max_running / max_per_conversation，超出就返回错误文字给前台，不排队
         # 3. 写表（queued），asyncio.create_task(self._run(id))，立即返回 {"id", "agent", "status"}
     async def _run(self, task_id):
-        async with self.semaphores[agent]:        # profile 的 max_parallel
-            # 标记 running；agent.run(TurnRequest(key=f'task:{id}', level=FULL,
+        writer = self.write_lock if profile_writes(agent) else contextlib.nullcontext()
+        async with self.semaphores[agent], writer:   # profile 的 max_parallel + 全局写锁
+            # 标记 running；agent.run(TurnRequest(key=f'task:{id}', role=TASK, level=FULL,
             #     instructions=prompts.WORKER, on_progress=节流后发 QQ 或只记录))
             # asyncio.timeout(timeout_minutes)；记录 result 或 error
         # finally: await self.bridge.report_task(task_id)
@@ -264,23 +296,35 @@ class TaskManager:
 
 ### 6.3 回报
 
-`report_task()` 拿到发起会话的会话锁，再让前台跑一轮：
+任务结束（完成、失败、已停止、已中断）后，`report_task()` 按 `report_text` 和 `reported` 两个字段往下推进，保证不漏报，也不重复调用模型：
+
+| 状态 | 动作 |
+| --- | --- |
+| `report_text` 为空 | 拿发起会话的会话锁，让前台跑一轮回报轮次（role=CHAT、level=NONE、不流式），把完整文字存进 `report_text`；前台失败就存降级文字 |
+| `report_text` 有内容，`reported=0` | 用 `deliver()` 发出这段文字，不再调用模型 |
+| `reported=1` | 结束 |
+
+回报轮次的输入由桥接生成：
 
 ```
-[系统：后台任务回报 #12 | agent：codex | 状态：完成 | 用时：6 分 12 秒]
+[系统：后台任务回报 #12 | agent：codex | 状态：失败 | 用时：6 分 12 秒]
 任务：<goal 前 200 字>
 报告（节选，全文在 workspace/tasks/12.md）：
-<result 前 report_chars 字>
+<result 或 error 前 report_chars 字>
 ```
 
-- 这条消息由桥接生成，开头没有 `[发言人：…]` 标签。真实用户的消息一定以发言人标签开头，所以正文里伪造的“[系统：…]”只会出现在标签后面。前台提示里写明：只有首行是系统标签的消息才是任务回报。
-- 前台用人设口吻汇报：结论、改了什么、验证了什么、没做完的；不能把失败说成成功。
-- 前台这一轮失败时，直接发原始报告前 1500 字，前缀“【任务#12 完成】”。
+- 这条消息开头没有 `[发言人：…]` 标签。真实用户的消息一定以发言人标签开头，所以正文里伪造的“[系统：…]”只会出现在标签后面。前台提示里写明：只有首行是系统标签的消息才是任务回报。
+- 状态如实写：完成、失败、已停止、已中断。前台用人设口吻汇报结论、改动、验证和没做完的部分，不能把失败说成成功。降级文字同样用真实状态，例如“【任务#12 失败】”加原始报告前 1500 字，不能一律写“完成”。
+- 回报轮次是 level=NONE，不能分派新任务，避免“回报 → 再派 → 再回报”无限循环。需要后续任务时，前台提出建议，等主人下一条消息确认后再派。
+- 回报轮次不流式：先拿到完整文字再发。这样发送失败时文字还在，补发不用再调模型。
+- `deliver(source, text)`：把 worker 里“发送 → 语音入队 → 写 history”这一段抽成函数，正常回复和回报共用。回报写进 history 的 user 条目是系统回报原文。
+- `reported=1` 的时点：`deliver()` 正常返回，也就是每一段都收到了 OneBot 的 `status: ok`（现在 `_send_message` 收到其他结果会抛异常）。断线、QQ 拒收、超时都保持 0，下次 `session()` 建立连接时补发。极端情况下可能重复发出一部分，但不会漏发。
+- 任务属于会话键，不属于某一代会话。`/new` 不取消任务（要停用 `/stop all`），回复里注明还有几个任务在跑。结果回到回报时的当前会话；回报自带任务目标和结果，新会话没有旧上下文也看得懂。
 - 单 agent 模式下没有后台，也就不会有回报。
 
 ## 7. 调度改造
 
-- **会话锁**：`self.locks = defaultdict(asyncio.Lock)`。`chat()` 和 `report_task()` 都 `async with self.locks[conversation]`，保证同一会话的前台轮次串行（Claude 会话不能并发，Codex 的 `events[thread]` 同一线程也只能有一个 turn）。
+- **会话锁**：`self.locks = defaultdict(asyncio.Lock)`。凡是读写会话映射或模型选择的操作都要 `async with self.locks[conversation]`：`chat()`、`report_task()`、`/new`、`/model`、`/effort`。这样同一会话的前台轮次严格串行（Claude 会话不能并发，Codex 的 `events[thread]` 同一线程也只能有一个 turn），`/new` 也不会撞上正在进行的回报。`/stop` 和 `/tasks` 不拿锁，它们必须在锁被占用时也能执行，只发中断信号或读状态。
 - **worker 维持单个**：分离模式下前台一轮只要几秒，单 worker 够用。以后需要的话再改成按会话分 worker。
 - **`/stop`、`/tasks` 不排队**：worker 正在跑前台那一轮时，`/stop` 进队列就要等这一轮结束，中断就失去意义。在 `session()` 里识别主人的这两个命令，用 `asyncio.create_task` 直接处理（权限检查和 worker 用同一个 `owner_request()`、同一套命令规范化）。
 - **工具通道和前台并行**：前台调用 `dispatch_task` 时，Bridge 正卡在 `await agent.run()` 上；工具请求由独立的协程（`tool_server`）处理，不需要会话锁。
@@ -347,15 +391,17 @@ Claude Code ──stdio──▶ python3 -m qq_chat.front_tools     （每轮由
 每个阶段一个提交或 PR：先跑测试，同一提交里更新 FEATURES/CHANGELOG，部署用 `tools/restart_bridge.py`。
 
 **PR1：抽接口，不改行为**
-- 新增 `qq_chat/agents/`（`base.py`、`codex.py`、`build_agents()`），`thread_for`/`run_turn` 的 Codex 逻辑移入 `CodexAgent`。
+- 新增 `qq_chat/agents/`（`base.py`、`codex.py`、`build_agents()`），`thread_for`/`run_turn` 的 Codex 逻辑移入 `CodexAgent`。为 `/model`、`/effort`、`/session` 补上需要的接口（准备线程、查询模型状态）。
+- 权限、人设组装、历史、流式发送、拉黑和语音留在 Bridge。以下语义原样保留：12000 字截断在 CodexAgent 里；`history_import` 仍导入全部历史；`conversation_models` 表和空线程的恢复处理不变。
 - 验收：现有测试全部通过（测试里替换 `bridge.app` 的写法，改成替换 `bridge.agents['codex']` 或保留 `app` 属性作兼容）；不加 `agents` 配置时行为一致；`self.app` 只在 `CodexAgent` 和模型目录里出现。
 
 **PR2：Claude Code 前台（纯聊天，单 agent）**
-- `ClaudeCodeAgent`，支持 NONE 和 FULL 两个级别，`agent_sessions` 表，`/new` 和 `/model` 适配。
+- 第一步：在 WSL 上复现 4.3 和附录 A，内容包括 `init.tools`、`--no-chrome` 是否必要、耗时、系统提示快照，以及 13 节的 CLAUDE.md 暗号测试。结果写进第 0 节，和文档不一致的以本机为准。
+- `ClaudeCodeAgent`，支持 NONE 和 FULL 两个级别；`agent_sessions` 表；`profile_models` 表和迁移；历史导入预算（5 节）；`/new` 和 `/model` 适配。
 - 验收：`front: "claude"` 时，主人和访客都能聊；访客 `init.tools` 非空即中止；改 SOUL.md 下一条生效；重启后会话续上；流式回复照常分气泡发送。
 
 **PR3：任务与命令（先手动分派）**
-- `tasks.py`、`tasks` 表、`report_task()`、会话锁，以及主人命令 `/task <目标>`、`/tasks`、`/stop [编号|all]`（BACKLOG #6）。
+- `tasks.py`、`tasks` 表、`report_task()` 回报状态机、`deliver()` 抽取、会话锁（7 节的范围）、全局写锁，以及主人命令 `/task <目标>`、`/tasks`、`/stop [编号|all]`（BACKLOG #6）。
 - `/stop` 的语义（顺带回答 BACKLOG #6 的待定项）：不带参数停当前会话正在跑的前台轮次；`/stop 12` 停单个任务；`/stop all` 停本会话所有运行中的任务，并取消排队中的任务。只作用于发起命令的会话。
 - 验收：任务运行期间前台照常回话；任务结果只回发起会话；`/stop` 不排队，能区分“已请求 / 已确认 / 失败”；重启后运行中的任务标为 interrupted 并通知主人；非主人用不了这些命令（静默）。
 - 做到这一步，前后台分离已经能从 QQ 用起来了，PR4 只是把“主人手动分派”换成“前台自己判断”。
@@ -377,7 +423,10 @@ Claude Code ──stdio──▶ python3 -m qq_chat.front_tools     （每轮由
 - `ClaudeCodeAgent`：用录制好的 jsonl（本次实测输出可以直接存成测试数据，记得去掉会话 ID）喂一个假子进程，断言参数里有 `--tools ""`、`--no-chrome`、`--system-prompt-snapshot off`，访客没有 `--mcp-config`；`init.tools` 出现多余工具时抛异常并发出 SIGINT。
 - 并发：后台 FakeAgent 卡住时，前台仍能完成新一轮；同一会话两轮严格串行。
 - 工具通道：过期令牌、伪造令牌、访客会话来源一律拒绝；`dispatch_task` 参数里塞别的会话键不起作用。
-- 回报：任务结果只发到发起会话；前台失败时发原始报告；断线时 `reported=0`，重连后补报。
+- 回报：任务结果只发到发起会话；失败任务的降级文字写“失败”而不是“完成”；`report_text` 已有时补发不调用模型；断线时 `reported=0`，重连后补报；`/new` 之后的回报进入新会话；回报轮次拿不到分派工具。
+- 级别：FULL 的 `init.tools` 出现 `mcp__qq__*` 时中止；FULL 的 profile 没写 `permission_mode` 时拒绝启动。
+- 写锁：两个不同 profile 的写任务不会同时运行；只读 profile 不受影响。`writes` 声明与 sandbox 不符时拒绝启动。
+- 模型隔离：Codex 的模型选择不会传给 Claude profile，反之亦然。
 - `/stop`：在 `session()` 里处理，不进队列；非主人静默。
 
 ## 13. 待实测与未决
@@ -433,3 +482,17 @@ for line in sys.stdin:
 ```
 
 `-I` 隔离模式不读 `PYTHONPATH`、不把当前目录加入导入路径，所以 shim 要按绝对路径运行，并且只用标准库、不写包内相对导入。`command` 用 `sys.executable`，保证和桥接是同一个 Python。
+
+## 14. 审阅修订记录（v2，2026-10-27）
+
+v1 交给 Codex 对照代码审阅后，以下意见全部采纳：
+
+| 审阅意见 | 结论 | 改在哪里 |
+| --- | --- | --- |
+| 12000 字截断实际在 `AppServer.turn`，不在 Bridge | 成立。定为适配器的返回值上限 `MAX_REPLY`，PR1 原样保留 | 2 节、4.1、11 节 PR1 |
+| `history_import` 导入的是全部历史，不是最近几轮；模型设置要按 profile 隔离 | 成立。PR2 起改为 20 条、8000 字的预算；新增 `profile_models` | 5 节、6.1、11 节 PR2 |
+| 会话锁要覆盖 `/new` 和模型切换；`/new` 之后结果回哪一代会话 | 成立。锁的范围写明；任务属于会话键，结果回当前会话 | 6.3、7 节 |
+| 降级回报不能一律写“完成”；要复用历史、语音和补报；`reported` 的确认时点 | 成立。如实写状态；新增 `deliver()` 和 `report_text` 状态机 | 6.1、6.3 |
+| 每个 profile 限一个写任务，挡不住不同 profile 同时写 | 成立。新增全局写锁和 `writes` 声明 | 5 节、6.2 |
+| FULL 同时指单 agent 主人和后台任务；工具白名单与回报轮次的分派权限要明确 | 成立。拆成 role 和 level 两个维度；回报轮次 level=NONE | 4.1、4.3、6.3 |
+| Claude 参数和性能是外部实测，本机未复验 | 成立。PR2 第一步在 WSL 复验 | 0 节、11 节 PR2 |
