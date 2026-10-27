@@ -85,6 +85,9 @@ class TaskCommands:
     def report_input(self, row):
         duration = max(0, int((row['finished'] or time.time()) - (row['started'] or row['created'])))
         body = (row['result'] or row['error'] or '')[:self.cfg.get('tasks', {}).get('report_chars', 4000)]
+        pending = self.db.execute('SELECT count(*) FROM task_inputs WHERE task=? AND consumed=0', (row['id'],)).fetchone()[0]
+        if pending:
+            body += f'\n尚未执行的追加要求：{pending} 条；停止、失败或重启后不会自动运行。'
         return (f"[系统：后台任务回报 #{row['id']} | agent：{row['agent']} | 状态：{LABELS[row['status']]} | 用时：{duration} 秒]\n"
                 f"任务：{row['goal'][:200]}\n报告（节选，全文在 workspace/tasks/{row['id']}.md）：\n{body}")
 
@@ -111,7 +114,7 @@ class TaskCommands:
                         else:
                             try:
                                 request = await self.turn_request(source, True)
-                                request.level, request.role = NONE, CHAT
+                                request.level, request.role, request.grant = NONE, CHAT, None
                                 request.instructions += '\n' + prompts.TASK_REPORT
                                 agent = self.agent_for(source)
                                 request.session_id = await agent.prepare(request)
@@ -134,7 +137,25 @@ class TaskCommands:
                 except Exception:
                     logging.warning('Task report pending id=%s', ident)
 
+    async def task_receipt(self, ident):
+        from .bridge import Source
+        locks = self.__dict__.setdefault('_receipt_locks', defaultdict(asyncio.Lock))
+        async with locks[ident]:
+            row = self.tasks.get(ident)
+            if row['receipt_sent']:
+                return True
+            try:
+                source = Source(**json.loads(row['source']))
+                await self.send(source, f"【已下发任务 #{ident} · {row['agent']}】{row['goal'][:200]}")
+                self.tasks._set(ident, receipt_sent=1)
+                return True
+            except Exception:
+                logging.warning('Task receipt pending id=%s', ident)
+                return False
+
     async def flush_task_reports(self):
+        for (ident,) in self.db.execute('SELECT id FROM tasks WHERE receipt_sent=0 ORDER BY id').fetchall():
+            await self.task_receipt(ident)
         rows = self.db.execute("SELECT id FROM tasks WHERE reported=0 AND status IN ('done','failed','stopped','interrupted','orphaned') ORDER BY id").fetchall()
         # A stuck report in one conversation must not block delivery to another.
         jobs = [asyncio.create_task(self.report_task(ident)) for (ident,) in rows]
@@ -170,7 +191,7 @@ class TaskCommands:
                 if not goal:
                     raise ValueError('用法：/task 完整目标；后台看不到聊天记录，请把要求写全')
                 task = await self.tasks.dispatch(self.conversation(source), source, goal)
-                await self.send(source, f"【已下发任务 #{task['id']} · {task['agent']}】{goal[:200]}")
+                await self.task_receipt(task['id'])
         except ValueError as error:
             await self.send(source, str(error))
 

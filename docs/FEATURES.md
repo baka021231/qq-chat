@@ -6,7 +6,7 @@
 
 ## Agent 与前后台模式
 
-PR1/PR2 已提供 Codex 和 Claude Code 适配器；没有 `agents` 配置仍使用原单 Codex。配置 `agents.front` 和 `agents.guest` 可分别选择主人和访客的 profile；`back: []` 为原单 agent 模式；配置一个后台 profile 后，主人前台用 NONE 聊天，操作由 `/task` 手动交给后台。本阶段不提供 MCP 自动派发或多个后台 profile。
+PR1/PR2 已提供 Codex 和 Claude Code 适配器；没有 `agents` 配置仍使用原单 Codex。配置 `agents.front` 和 `agents.guest` 可分别选择主人和访客的 profile；`back: []` 为原单 agent 模式；配置一个后台 profile 后，Codex 主人前台为 NONE、手动用 `/task`，Claude 主人前台可为 FRONT、经工具派发。PR4 支持 Claude 主人前台通过 MCP 自动派发；Codex 前台仍用手动 /task。本阶段不开放多个后台 profile。
 
 Claude 访客使用 NONE：safe-mode、两个禁用 CLAUDE.md/自动记忆的环境变量及空工具列表校验；主人单 agent 使用 FULL，权限模式必须显式配置，正常加载项目规则。Claude 的回复先完整缓冲，校验工具与调用标记后再分气泡发送，因此不即时发送首字；拒绝的回复不进入历史或语音。Codex 原流式发送保留。
 
@@ -25,6 +25,14 @@ Claude `/models` 读取 profile 的配置目录，`/model default` 恢复其配�
 - 重启时 queued → interrupted，running/stopping → orphaned，通知主人；不自动查进程、不发信号、不确认旧任务结束。主人自己确认结束后，用 `/task release 编号` 人工释放。
 - 任务结果保存在 `workspace/tasks/编号.md`，回报进入发起会话的历史和原语音流程。QQ 断线不取消后台，发送失败保留回报，重连补发；可能重复部分气泡，不重复生成已有回报。
 - `/new` 不取消后台，结果回到该会话的新一代线程。没有配置后台时 `/task` 明确提示未配置，不改变原单 agent 行为。
+
+## 主人前台工具（PR4）
+
+- 分离模式的 Claude 主人前台为 FRONT：只能调用桥接提供的六个工具，不能直接读写电脑。需要操作时分派后台；访客与任务回报轮次始终 NONE，没有工具授权。
+- 工具包括派发、列当前会话任务、查任务状态、请求停止、给运行任务追加下一轮要求，以及在当前聊天拍一拍主人。不能指定其他聊天或第三人。
+- 派发成功以桥接直接发送的固定编号回执为准；前台正文不能伪造回执或调用标记。工具失败明确报告，调用记审计日志，不记录令牌或参数全文。
+- 断线后补发待发回执及任务回报。追加要求保存在同任务下一轮，不打断本轮，不增加并行写任务，不重置任务总超时；停止或重启后不自动执行遗留要求。
+- 本机 FRONT 隔离正负对照及真实 Sonnet 合成派发通过，结论限当前 CLI 版本。尚未部署，实际 QQ 自动派发和拍一拍待主人验收。
 
 ## 角色
 

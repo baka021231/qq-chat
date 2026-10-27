@@ -208,7 +208,7 @@ def user_message(text, images):
 `run()` 的要点：
 
 - NONE 的子进程环境设置 `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` 和 `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`，同时加 `--safe-mode`。FRONT 也设置两个环境变量，但绝不加 safe-mode，以免禁用显式 MCP；FULL 不增加这些开关，正常加载用户和项目规则。
-- CHAT 回复含 `<invoke`、`<system-reminder>` 等调用标记时，整轮视为失败，不发送该回复到 QQ。为保证整轮拒发，Claude 的文本先缓冲校验，再通过原气泡发送路径交付；不能在校验前泄露流式前缀。任务是否存在只以 tool_server 记录为准，不能从模型文字提取任务编号并当作派发成功。
+- CHAT 回复含 `<invoke`、`<system-reminder>` 等调用标记或伪造的 `【已下发任务` 回执时，整轮视为失败，不发送该回复到 QQ。为保证整轮拒发，Claude 的文本先缓冲校验，再通过原气泡发送路径交付；不能在校验前泄露流式前缀。任务是否存在只以 tool_server 记录为准，不能从模型文字提取任务编号并当作派发成功。
 - PR4 的下发回执由桥接负责：tool_server 真正建好任务后，桥接直接向发起会话发送固定格式，例如“【已下发任务 #12 · codex】修复 README 错别字”，不经过模型。主人以这条回执确认派发，前台话语不能替代回执。PR2 仅落实文本校验与缓冲，不提前实现派发。
 
 
@@ -401,10 +401,11 @@ Claude Code ──stdio──▶ python3 -m qq_chat.front_tools     （每轮由
 | 工具 | 参数 | 返回 |
 | --- | --- | --- |
 | `dispatch_task` | `goal`（写完整，后台看不到聊天记录）、`agent`（枚举） | 任务编号、agent、状态 |
-| `list_tasks` | 无 | 本会话最近的任务；主人私聊里可以看全部 |
+| `list_tasks` | 无 | 仅本会话最近的任务，不跨会话 |
 | `task_status` | `id` | 状态、耗时、最近进度 |
 | `stop_task` | `id` | requested / not_running / not_found |
-| `send_to_task` | `id`、`message` | 任务运行中就排到它的下一轮（Codex 若支持中途追加再优化） |
+| `send_to_task` | `id`、`message` | 运行中追加到同任务、同线程的下一轮；不打断本轮 |
+| `poke` | 无 | 只在当前聊天拍一拍当前主人 |
 
 任务只能在发起它的会话里查看和操作。主人在群里时，不能列出私聊发起的任务，这与 `prompts.OWNER` 里“群内不主动泄露主人其他私聊”一致。
 
@@ -457,7 +458,7 @@ PR2（Claude 单 agent）已完成并通过主人 QQ 验收（2026-10-27）：�
 - 验收：任务运行期间前台照常回话；分离模式下主人前台不会自己改文件；任务结果只回发起会话；`/stop` 不排队，先回“已请求”，结局能区分已确认停止、停止前已完成、停止前已失败、未确认和停止失败；重启后 queued 直接记为 interrupted，running、stopping 一律记为 orphaned 并通知主人；写任务继续占锁，直到主人 /task release；不做自动核对或恢复；非主人用不了这些命令（静默）。
 - 做到这一步，前后台分离已经能从 QQ 用起来了，PR4 只是把“主人手动分派”换成“前台自己判断”。
 
-**PR4：前台工具通道**
+**PR4：前台工具通道——实现完成，待主人确认合并与部署验收**
 - `front_tools.py`（MCP shim）、`tool_server`、一次性令牌、`FRONT_DESK` 提示；分离模式的主人前台从 NONE 换成 FRONT。真实建任务后由桥接直接发送固定格式下发回执，不经模型；任务存在性仅认工具服务记录。
 - 验收：分离模式下，主人说“帮我修个 bug”时前台会分派；访客的消息永远不带 MCP；群里主人分派的任务回报到该群；三道上限生效。
 
@@ -496,7 +497,7 @@ PR2（Claude 单 agent）已完成并通过主人 QQ 验收（2026-10-27）：�
 5. 换成 Claude 前台后，人设的表现要重新调：被认真问到“你是不是 AI”时的反应、语气、长度控制都会和 Codex 不同。
 6. 多个写任务同时改同一仓库：目前靠第 5 节的全局写锁（`tasks.max_writers`，默认 1）串行执行，以后按任务开 git worktree 再放开。
 7. 中断的实际表现：Claude 被 SIGINT 后 `result` 的 subtype 和退出码（决定 4.3 第 6 条的判定规则）；本机 App Server 的 turn 状态取值（4.2 的表）；自动重启恢复不在 PR3 范围，见下方可选增强。
-8. PR4 前验证无 safe-mode 的 FRONT 是否加载用户 hooks、插件、skills。会加载则采用独立配置目录并由主人单独登录；不能因 init.tools 为空就认为所有自定义行为都关闭。
+8. PR4 本机验证已完成，见第 14 节：本版本精确参数下用户 hook/插件/skills 未加载，正对照确认测试项可执行或可加载；显式 MCP 正常。无需独立配置目录或登录。结论限 Claude 2.1.311 和当前参数；升级后重验，不能只看工具列表。
 
 ### 可选增强：自动确认旧执行结束（移自原 6.2，PR3 不实现）
 
@@ -649,3 +650,36 @@ v1 交给 Codex 对照代码审阅后，以下意见全部采纳：
 - 本机 thread/read(includeTurns=true) 协议与已完成任务只读探针已验证；159 项离线测试通过。
 - 开工前验证无 safe-mode 的 FRONT 对 hooks、插件和 skills 的隔离，若会加载改用独立 CLAUDE_CONFIG_DIR，需要登录时由主人终端登录，不复制或读取凭据。
 - 使用 debug-file 以及 DISABLE_AUTOUPDATER=1、CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 各三次调查启动耗时；仅测试和汇报，不更改运行配置。
+
+### PR4 本机前置验证与实现记录（2026-10-27）
+
+- 前置修复单独提交 e88c960，PR4 主体另一个提交，均在 front-back-pr4，未混入 main。
+- 隔离测试不用 safe-mode，使用两个禁用记忆环境变量、空 cwd、setting-sources project、disable-slash-commands、空内置工具、strict-mcp-config 和 no-chrome，挂一个无害显式 MCP。临时注册用户 SessionStart hook、用户 skill、有效本地插件及其 hook/skill，测试后核对并恢复用户配置及注册表，清理临时技能与插件；未读取、复制或改动认证凭据。
+- 正对照允许 user/project/local 设置及技能：用户 hook、插件 hook 均实际执行，init 列表含用户技能与插件技能、插件条目。精确 FRONT 参数下：两种 hook 均未执行，技能列表为空，用户插件未进入，debug 为 0 用户技能和 0 注册 hook；显式 MCP 工具正常。内置插件仍存在，这个结论不是“所有插件都关闭”。当前无需独立 CLAUDE_CONFIG_DIR 或登录；以后若验证失败，停在主人登录步骤，不复制凭据。
+- 最初未登记本地 marketplace 的插件对照无效（插件根本没加载），已修正为有效本地 marketplace 并重跑正负对照；最终结论只依据有效对照，不把无效探针当隔离证据。
+
+#### 启动 5 秒调查（只测不改配置）
+
+程序实际位于 Linux 本地，版本 2.1.311；原始 `--version` 约 0.02～0.12 秒。以下为同一台 WSL、haiku、合成请求、空内置工具、无 safe-mode、绕过 QQ 和桥接的独立进程；每组仅在该子进程设置对应变量，其他参数相同。不是 FRONT 业务耗时承诺。
+
+| 分组（各 3 次） | init 秒 | init 中位数 | 全轮秒 |
+| --- | --- | --- | --- |
+| 基线 | 5.199, 5.201, 5.194 | 5.199 | 8.240, 7.638, 7.506 |
+| DISABLE_AUTOUPDATER=1 | 5.195, 5.191, 5.191 | 5.191 | 7.434, 7.732, 7.734 |
+| CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 | 5.160, 5.159, 5.146 | 5.159 | 5.959, 6.797, 6.587 |
+
+
+- 九份 debug 日志均定位到 `MDM settings load completed in 4951～4958ms`。额外只读子进程观察显示 `reg.exe` 查询从约 0.021 秒持续到 5.009 秒，然后 CLI 初始化继续；查询内容和注册表返回值未输出或修改。由日志与进程时间线定位到 WSL 下 Windows 托管设置检查的等待，不能归因于二进制位于 /mnt/c，也不是桥接排队、自动更新或非必要遥测造成的这段主要延迟。未进一步断言 Windows reg.exe 内部为何等待，未作绕过或优化。
+- 禁用非必要流量时全轮样本较短，但初始化中位数仍约 5.159 秒；不能把小样本全轮差异当成稳定性能提升。两个开关均未写入运行配置、profile 或服务环境。
+
+#### 工具通道与边界
+
+- 新增 tool_server.py 和 front_tools.py（纯标准库、python -I）。Unix socket 600、目录 700；每轮随机授权仅绑定真实主人 Source 与会话，临时 MCP 配置 600；结束/失败/取消均撤销令牌和删除配置，过期或伪造令牌拒绝。参数不能夹带会话、QQ 号或其他接收目标。
+- Claude FRONT 不用 safe-mode，使用两个环境变量和显式 MCP；init.tools 必须与 6 个 FRONT_TOOLS 完全一致，缺少、多出、重复或运行中出现非白名单工具都中止。NONE 和 FULL 沿用原隔离与加载规则；Codex 当前台时保持手动 NONE，不提前实现尚待验证的 Codex FRONT MCP。
+- 本阶段工具为 dispatch_task、list_tasks、task_status、stop_task、send_to_task、poke，均有 schema 和说明。任务/动作仅作用于令牌绑定会话；list_tasks 采用更严格的只列当前会话，消除原表格“私聊看全部”与同节范围规则的冲突。poke 最小版本只拍当前主人，不能指定第三人。NapCat send_poke 参数形态已对照本机安装源码，实际拍一拍留给 QQ 验收。
+- 每次请求、成功或失败写审计日志，日志不记录令牌、提示词和任意参数正文。返回明确错误；任务状态工具只返回受限摘要，不返回来源 QQ、内部 session/runtime_ref 或其他会话资料。
+- 真实 dispatch 写入任务后，由桥接发固定回执，模型文字不构成任务事实；CHAT 伪造固定回执也整轮拒发。增加 tasks.receipt_sent；断线时保留待发回执，重连先补回执，避免模型误以为失败而重复派发。回报文字仍先落库，再走原发送、语音与历史；旧任务迁移默认已发回执，避免给旧任务补发无关通知。
+- send_to_task 持久化到 task_inputs，只接受当前会话 running 任务，每任务待处理最多 10 条。当前轮结束后，同任务、同线程在原执行占用内继续下一轮；不支持中途 steer，不因追加要求新开写任务或重置总超时。停止、超时或重启后不自动执行遗留要求；状态/报告说明未执行部分。Codex 每轮记录精确 thread_id/turn_id，人工 check 能识别最后一轮；旧任务缺少 turn_id 且多轮时仍保守未知。
+- 工具调用不拿会话锁，前台等待 MCP 时可直接建任务或发回执；后台结果回报等待该会话锁。回报 CHAT/NONE 明确清空 grant，不拿任何派发工具。
+- 本机用真实 Claude sonnet、全部六个工具和实际 stdio/Unix 链路成功创建一个合成任务，桥接确实生成回执，前台结束令牌撤销，全轮约 8.787 秒；后台为 FakeAgent，QQ 发送替身，没有实际后台操作或 QQ 动作。其余权限、失败、取消、补报由离线测试覆盖。
+- 部署目标：主人 claude_front/sonnet（FRONT），访客 claude_guest/haiku（NONE），后台 codex；配置样例见 config.front-back.example.json。当前线上配置、数据库和服务不改。未合并、未重启，未开始 PR5，等待主人确认后部署并 QQ 验收。

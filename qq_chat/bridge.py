@@ -13,7 +13,8 @@ import uuid
 import unicodedata
 from . import prompts
 from .agents import CHAT, FULL, NONE, TurnRequest, build_agents
-from .agents.base import MissingSession, Interrupted
+from .agents.base import MissingSession, Interrupted, FRONT
+from .tool_server import ToolServer
 from .tasks import TaskManager
 from .task_commands import TaskCommands, serialized
 from .agents.config import legacy_codex_profile, settings
@@ -172,6 +173,8 @@ class Bridge(TaskCommands):
         self.agents = build_agents(cfg, self.db, BASE / "workspace")
         self._history_replies = {}
         self.tasks = TaskManager(self, BASE)
+        self.tool_server = ToolServer(self, BASE)
+        self._front_grants = {}
         self._active_front = {}
 
     @property
@@ -349,7 +352,10 @@ class Bridge(TaskCommands):
             model=selection[0] if selection else profile.get('model'),
             effort=selection[1] if selection else profile.get('effort'))
         if authorized and self.cfg.get('agents', {}).get('back'):
-            request.instructions += '\n' + prompts.FRONT_DESK
+            grant = self.__dict__.get('_front_grants', {}).get(request.key)
+            request.level = FRONT if grant is not None else NONE
+            request.grant = grant
+            request.instructions += '\n' + (prompts.FRONT_DESK_TOOLS if grant is not None else prompts.FRONT_DESK)
         return request
 
     async def thread_for(self, source, authorized):
@@ -505,7 +511,20 @@ class Bridge(TaskCommands):
 
     @serialized
     async def chat(self, source, text, context_id=None, image_paths=()):
-        async with self.front_execution(source, self.agent_for(source)):
+        agent = self.agent_for(source)
+        config = self.cfg.get('agents', {})
+        profile = config.get('profiles', {}).get(config.get('front'), {})
+        server = getattr(self, 'tool_server', None)
+        if (owner_request(source, self.cfg['owner_qq']) and config.get('back')
+                and profile.get('type') == 'claude_code' and server and server.server is not None):
+            async with server.grant(source) as grant:
+                self._front_grants[self.conversation(source)] = grant
+                try:
+                    async with self.front_execution(source, agent):
+                        return await self._chat(source, text, context_id, image_paths)
+                finally:
+                    self._front_grants.pop(self.conversation(source), None)
+        async with self.front_execution(source, agent):
             return await self._chat(source, text, context_id, image_paths)
 
     async def _chat(self, source, text, context_id=None, image_paths=()):
@@ -712,6 +731,8 @@ class Bridge(TaskCommands):
         for name in dict.fromkeys((*settings(self.cfg)[:2], *self.cfg.get('agents', {}).get('back', []))):
             await self.agents[name].start()
         await self.tasks.recover_after_restart()
+        if self.cfg.get('agents', {}).get('back'):
+            await self.tool_server.start()
         logging.info("App Server initialized")
         while True:
             try:

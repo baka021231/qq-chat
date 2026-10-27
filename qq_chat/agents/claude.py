@@ -14,14 +14,15 @@ import tempfile
 import time
 import uuid
 
-from .base import Agent, CHAT, TASK, FULL, MAX_REPLY, MissingSession, NONE, Interrupted, ExecutionUncertain
+from ..tool_server import FRONT_TOOLS
+from .base import Agent, CHAT, TASK, FULL, FRONT, MAX_REPLY, MissingSession, NONE, Interrupted, ExecutionUncertain
 
 BASE_ARGS = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json',
              '--verbose', '--include-partial-messages', '--system-prompt-snapshot', 'off',
              '--setting-sources', 'project', '--disable-slash-commands', '--no-chrome',
              '--permission-prompts', 'none']
 ISOLATION_ENV = ('CLAUDE_CODE_DISABLE_CLAUDE_MDS', 'CLAUDE_CODE_DISABLE_AUTO_MEMORY')
-CALL_MARKERS = re.compile(r'<\s*(?:invoke|system-reminder)', re.IGNORECASE)
+CALL_MARKERS = re.compile(r'<\s*(?:invoke|system-reminder)|【\s*已下发任务', re.IGNORECASE)
 
 
 class UnexpectedTools(RuntimeError):
@@ -88,7 +89,7 @@ class ClaudeCodeAgent(Agent):
         return self._state.get(session_id, (self.profile.get('model'), self.profile.get('effort')))
 
     async def prepare(self, req):
-        if req.role not in (CHAT, TASK) or req.level not in (NONE, FULL) or (req.role == TASK and req.level != FULL):
+        if req.role not in (CHAT, TASK) or req.level not in (NONE, FRONT, FULL) or (req.role == TASK and req.level != FULL):
             raise ValueError('Unsupported Claude role/level; FRONT requires PR4')
         session = self.session_id(req.key)
         if session is None:
@@ -139,7 +140,7 @@ class ClaudeCodeAgent(Agent):
 
     async def _run(self, req):
         await self.start()
-        if req.role not in (CHAT, TASK) or req.level not in (NONE, FULL) or (req.role == TASK and req.level != FULL):
+        if req.role not in (CHAT, TASK) or req.level not in (NONE, FRONT, FULL) or (req.role == TASK and req.level != FULL):
             raise ValueError('Unsupported Claude role/level; FRONT requires PR4')
         if req.key in self._active:
             raise RuntimeError('Claude session already has an active turn')
@@ -156,6 +157,14 @@ class ClaudeCodeAgent(Agent):
             if req.level == NONE:
                 args += ['--safe-mode', '--tools', '', '--strict-mcp-config',
                          '--disallowedTools', 'mcp__*', '--permission-mode', 'dontAsk',
+                         '--system-prompt-file', prompt]
+                env.update({key: '1' for key in ISOLATION_ENV})
+                cwd = self.runtime
+            elif req.level == FRONT:
+                if req.grant is None:
+                    raise ValueError('FRONT requires a bridge-issued tool grant')
+                args += ['--tools', '', '--strict-mcp-config', '--mcp-config', req.grant.config_path,
+                         '--allowedTools', 'mcp__qq__*', '--permission-mode', 'dontAsk',
                          '--system-prompt-file', prompt]
                 env.update({key: '1' for key in ISOLATION_ENV})
                 cwd = self.runtime
@@ -201,7 +210,9 @@ class ClaudeCodeAgent(Agent):
                         tools = event.get('tools')
                         if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
                             raise UnexpectedTools('Missing or invalid Claude tool list')
-                        if (req.level == NONE and tools) or any(t.startswith('mcp__qq__') for t in tools):
+                        if ((req.level == NONE and tools)
+                                or (req.level == FRONT and (set(tools) != FRONT_TOOLS or len(tools) != len(FRONT_TOOLS)))
+                                or (req.level == FULL and any(t.startswith('mcp__qq__') for t in tools))):
                             raise UnexpectedTools('Claude tools violate the current permission level')
                         initialized = True
                         self._fresh.discard(session)
@@ -213,6 +224,12 @@ class ClaudeCodeAgent(Agent):
                             continue
                         if kind == 'assistant':
                             message = event.get('message', {})
+                            for block in message.get('content', []):
+                                if block.get('type') == 'tool_use':
+                                    name = block.get('name', '')
+                                    if (req.level == NONE or (req.level == FRONT and name not in FRONT_TOOLS)
+                                            or (req.level == FULL and name.startswith('mcp__qq__'))):
+                                        raise UnexpectedTools('Unexpected completed tool call')
                             parts = [b.get('text', '') for b in message.get('content', []) if b.get('type') == 'text']
                             if parts:
                                 messages[message.get('id', 'assistant')] = '\n'.join(parts)
@@ -223,7 +240,8 @@ class ClaudeCodeAgent(Agent):
                             delta = inner.get('delta', {})
                             if inner.get('type') == 'content_block_start' and inner.get('content_block', {}).get('type') == 'tool_use':
                                 name = inner['content_block'].get('name', '')
-                                if req.level == NONE or name.startswith('mcp__qq__'):
+                                if (req.level == NONE or (req.level == FRONT and name not in FRONT_TOOLS)
+                                        or (req.level == FULL and name.startswith('mcp__qq__'))):
                                     raise UnexpectedTools('Unexpected runtime tool call')
                                 if req.on_progress:
                                     req.on_progress('正在使用工具')

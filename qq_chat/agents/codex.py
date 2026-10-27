@@ -77,6 +77,8 @@ class CodexAgent(Agent):
     async def run(self, req: TurnRequest):
         thread = req.session_id if req.session_id is not None else await self.prepare(req)
         options = {'model': req.model, 'effort': req.effort} if req.model is not None else {}
+        if req.on_runtime is not None:
+            options['on_started'] = req.on_runtime
         reply = await self.app.turn(thread, req.text, on_progress=req.on_progress,
                                     on_answer=req.on_answer, show_tools=req.show_tools,
                                     image_paths=req.images, **options)

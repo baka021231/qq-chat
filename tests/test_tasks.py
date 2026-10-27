@@ -325,7 +325,7 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.row(ident)['reported'], 1)
         self.assertEqual({source for source, _ in self.sent}, {self.group})
         await self.bridge.flush_task_reports()
-        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(len(self.sent), 2)  # Durable dispatch receipt plus saved report.
         self.assertEqual(len(self.voices), 1)
         self.assertIn('后台任务回报', self.bridge.db.execute("SELECT content FROM history WHERE role='user'").fetchone()[0])
 
