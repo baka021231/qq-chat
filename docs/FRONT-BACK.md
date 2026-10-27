@@ -13,6 +13,15 @@ v4：已按 2026-10-27 的三轮代码审阅意见修订，改动对照见第 14
 - 和 Codex 有关的逻辑集中在 `thread_for()`、`run_turn()`、`model_command()`/`effort_command()`，外加 `run()` 里的一次 `self.app.start()`。抽出一层接口就能把具体 agent 换掉。
 - `AppServer.turn()` 按 `threadId` 分发事件，一条 App Server 连接上本来就能同时跑多个 Codex 线程。所以“后台多 agent”不需要新增 Codex 进程。
 
+### PR2 本机启动隔离复验（待确认调整）
+
+- 本机 Claude Code 2.1.311，使用已登录的订阅、独立空目录和 haiku，仅发送合成测试文字，不使用真实 QQ 内容。
+- 原 4.3 参数组合能正常返回，`system/init.tools=[]`，首次完整运行约 7.53 秒；该数字是单次端到端耗时，不是冷启动或首字时间，不能与云端三项计时直接比较。
+- 用户级 `~/.claude/CLAUDE.md` 初始不存在；临时独占创建无害 canary，测试后按内容核对并删除。原参数下模型能准确返回该 canary，即使工具列表为空。证明 `--setting-sources project` 加空 cwd 不能隔离用户级记忆内容。
+- 仅追加 `--safe-mode` 后，在相同 canary 存在时模型未返回 canary，显式 `--system-prompt-file` 仍生效，工具列表为空，订阅调用成功，单次端到端约 8.18 秒。
+- 建议 NONE（及未来 FRONT）启动时启用 `--safe-mode`，保留显式人设注入和 `init.tools` 校验。此项改变 4.3 的启动隔离设计，按第 11 节执行规则先汇报，确认后再实现 PR2。
+- 本轮尚未完成续接/提示热更新、MCP shim、图片和中断实测，不据此标记 PR2 完成；尚未写实现代码、合并或重启。
+
 ### 已实测（Claude Code 2.1.311，云端 Linux 容器，haiku；尚未在 WSL 复验，PR2 第一步复验）
 
 - 用 `--tools ""` 关掉全部内置工具，再挂一个自己写的 MCP 服务器（附录 A），前台能正确调用 `dispatch_task`，`goal` 写得完整，`result` 只包含最终那段话。
@@ -474,7 +483,7 @@ PR1（抽接口、不改既有单 Codex 行为）已完成，接口与保留语�
 
 ## 13. 待实测与未决
 
-1. `--setting-sources project` 下，`~/.claude/CLAUDE.md`（你自己做开发用的个人指令）还会不会注入前台。测法：在里面写一句暗号，问前台暗号是什么，应该答不出来。
+1. 用户级 CLAUDE.md 隔离：本机已复现原参数会注入 canary；追加 `--safe-mode` 的单轮 canary 检查通过。启动方式调整待主人确认，之后还需验证续接和全部权限模式。
 2. stream-json 输入里的 base64 图片块（格式来自官方文档，未实测）。
 3. WSL 上的冷启动耗时；如果明显变慢，再考虑每个会话一个长驻进程。
 4. Codex App Server 有没有中途追加消息的接口（决定 `send_to_task` 的实现）；Codex 在分离模式下当前台时，能否通过 `thread/start` 的 `config` 挂 MCP。
@@ -568,3 +577,8 @@ v1 交给 Codex 对照代码审阅后，以下意见全部采纳：
 | 只凭 PID 和命令行判断 Claude 进程归属，可能误杀复用了 PID 的进程 | 成立。启动时记录 pid、pgid、启动时间、boot_id、cgroup、`QQ_TASK_NONCE`，全部吻合才发信号，部分吻合不发信号并进入 orphaned | 4.3、6.1、6.2、12 节 |
 
 这两条都只影响 PR3，不影响 PR1。
+
+### PR2 启动隔离审阅
+
+- 本机发现 `--setting-sources project` 不隔离用户级 CLAUDE.md，空工具列表不等于未加载私人指令。已将可复现结果写进第 0 节及第 13 节第 1 条。
+- 验证了追加 `--safe-mode` 的无工具单轮启动：未读出测试 canary、显式提示生效、订阅可用。建议用此方式隔离 NONE/FRONT；因影响当前 PR2 的启动设计，依执行规则暂停代码实现并汇报，未默认为已获批准。
