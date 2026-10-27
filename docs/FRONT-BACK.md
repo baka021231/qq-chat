@@ -2,7 +2,7 @@
 
 本文是 `qq-chat` 前后台分离的实施方案，基于 `65361f4`（2026-10-27）的代码。可以放进 `docs/`，按第 11 节分阶段实现；每个阶段完成后，把对应内容写进 `docs/FEATURES.md`、`docs/ARCHITECTURE.md` 和 `docs/CHANGELOG.md`，本文只保留未完成部分。
 
-v2：已按 2026-10-27 的代码审阅意见修订，改动对照见第 14 节。
+v3：已按 2026-10-27 的两轮代码审阅意见修订，改动对照见第 14 节。
 
 ## 0. 结论
 
@@ -43,7 +43,7 @@ v2：已按 2026-10-27 的代码审阅意见修订，改动对照见第 14 节�
 **非目标（这一轮不做）**
 
 - 后台向主人提问后暂停等待（`ask_user`），先在报告里写明“需要你提供什么”。
-- 多个写任务在同一仓库并行时的隔离（git worktree），见 12 节。
+- 多个写任务在同一仓库并行时的隔离（git worktree），见 13 节第 6 条。
 - DeepSeek 等直接调 API 的前台。接口留好，以后加 `type: "openai_chat"` 即可。
 
 ## 2. 现状与改动点
@@ -93,6 +93,9 @@ NONE, FRONT, FULL = 'none', 'front', 'full'   # 权限级别：只决定工具�
 CHAT, TASK = 'chat', 'task'                   # 角色：只决定用哪套指令
 MAX_REPLY = 12000                             # run() 返回值上限
 
+class Interrupted(Exception):                 # 本轮因为我们发出的中断而结束（4.2、4.3）
+    pass
+
 @dataclass
 class TurnRequest:
     key: str                  # 会话键，如 "private:<QQ>"、"group:<群>:owner"，或 "task:12"
@@ -111,7 +114,7 @@ class Agent:
     name: str                                             # profile 名
     async def start(self): ...
     async def run(self, req: TurnRequest) -> str: ...     # 返回完整回复；失败抛异常
-    async def interrupt(self, key: str) -> bool: ...      # 已发出中断返回 True
+    async def interrupt(self, key: str) -> bool: ...      # 中断请求送达执行端返回 True；结局看 run()
     async def reset(self, key: str): ...                  # /new：归档旧会话
     async def models(self) -> list[dict]: ...             # /model 用
     async def close(self): ...
@@ -123,7 +126,8 @@ class Agent:
 | --- | --- | --- | --- |
 | 群友、白名单访客 | CHAT | NONE | `GUEST`（群聊再加 `GROUP_MODERATION`） |
 | 主人，单 agent 模式 | CHAT | FULL | `OWNER` + SOUL.md + OWNER.md |
-| 主人，分离模式 | CHAT | FRONT | 同上，再加 `FRONT_DESK` |
+| 主人，分离模式，PR4 之前 | CHAT | NONE | 同上，再加手动版 `FRONT_DESK`（提醒主人用 `/task`） |
+| 主人，分离模式，PR4 起 | CHAT | FRONT | 同上，再加 `FRONT_DESK` |
 | 任务回报轮次（6.3） | CHAT | NONE | 同上一行，但不能分派 |
 | 后台任务 | TASK | FULL | `WORKER` |
 
@@ -143,7 +147,16 @@ level 和“是不是主人”也是两回事：回报轮次属于主人会话�
 
 后台任务每个任务开一条新线程（`ephemeral: False`，需要时可以在终端 `codex resume` 接着看），记录在 `tasks.session_id`，不写 `threads` 表。
 
-`interrupt(key)`：找到该 key 当前线程的 `active_turns[thread]`，调用 `turn/interrupt`；确认中断以收到 `turn/completed` 且状态不是 completed 为准。
+`interrupt(key)`：找到该 key 当前线程的 `active_turns[thread]`，调用 `turn/interrupt`。这个 RPC 报错就是“停止失败”，任务回到 running。RPC 成功只算“已请求”，最终结局看这一轮的 `turn/completed`：
+
+| `turn.status` | 结局 | 任务状态 |
+| --- | --- | --- |
+| `interrupted` | 已确认停止 | stopped |
+| `completed` | 停止前已完成 | done，照常回报 |
+| `failed` | 停止前已失败 | failed，报告里写错误 |
+| 30 秒内没收到 | 停止未确认 | 保持 stopping，告诉主人还在等；之后收到事件，再按上面三行结算 |
+
+`run()` 按结局区分：`interrupted` 抛 `Interrupted`，`failed` 抛普通异常，`completed` 正常返回。现在 `AppServer.turn()` 把所有非 completed 状态都抛成同一个 `RuntimeError`；PR1 不动，PR3 把 interrupted 单独区分出来。状态取值以本机 App Server 实际返回为准（13 节第 7 条）。
 
 ### 4.3 ClaudeCodeAgent（参数已实测）
 
@@ -198,7 +211,7 @@ def user_message(text, images):
 
    `result` 只包含最后一段文字。如果前台先说一句再调工具，流式发出去的文字会比 `result` 多，所以写 `history` 用流式拼出的全文，不要用 Codex 那种“前缀必须一致”的校验。
 
-6. **中断**：发 SIGINT（官方文档写明这样会结束当前轮）；5 秒内没退出就发 SIGTERM，再不行 kill 整个进程组。
+6. **中断**：发 SIGINT（官方文档写明这样会结束当前轮）；5 秒内没退出就发 SIGTERM，再不行 kill 整个进程组。结局判定：收到 `subtype == 'success'` 的 `result`，算停止前已完成；我们发过 SIGINT 后，进程以其他结果或没有结果退出，算已确认停止，原始 subtype 和退出码记进 `error`；没发过 SIGINT 却失败，算失败。SIGINT 之后 `result` 具体长什么样，PR2 复验时记录下来，必要时修正这条规则（13 节第 7 条）。
 7. **同一会话不能并发**：同一个 session ID 同时跑两个 `--resume` 会把会话写乱，所以会话锁必不可少（第 7 节）。
 
 ## 5. 配置
@@ -233,7 +246,8 @@ def user_message(text, images):
 规则：
 
 - 没有 `agents` 时，等价于 `{"front": "codex", "back": [], "profiles": {"codex": {"type": "codex_app", "path": codex_path}}}`，也就是现状。
-- `back` 为空即单 agent 模式：主人会话用 FULL 级别，前台自己干活。`back` 非空即分离模式：主人会话用 FRONT 级别，只能分派。
+- `back` 为空即单 agent 模式：主人会话用 FULL 级别，前台自己干活。`back` 非空即分离模式：主人前台不自己干活。PR4 之前还没有工具通道，主人前台用 NONE，只聊天，干活由主人用 `/task` 手动分派（`FRONT_DESK` 用手动版，提醒主人用 `/task`）；PR4 起改用 FRONT。用哪一级由代码里工具通道是否可用决定，不另设配置项。
+- 过渡期不用 FULL，是因为前台自己改文件会绕开全局写锁，和后台任务撞车。PR4 之前想让她像现在一样直接干活，就先保持 `back: []`。
 - `guest` 默认等于 `front`。访客永远是 NONE 级别。
 - `back` 里的 `description` 会写进 `dispatch_task` 的工具说明，前台据此选 agent；`agent` 参数是 `back` 列表构成的枚举。
 - `tasks.progress`：`direct` 把后台进度节流后直接发到 QQ；`silent` 不推送，只在前台调用 `task_status` 时返回。主人在群里的任务建议用 `silent`。
@@ -262,8 +276,10 @@ CREATE TABLE IF NOT EXISTS tasks (
   conversation TEXT NOT NULL,     -- 发起任务的会话键，结果只回这里
   source TEXT NOT NULL,           -- Source 的 JSON，回报时用来发送
   agent TEXT NOT NULL, session_id TEXT,
+  runtime_ref TEXT,               -- Codex 的 turn_id 或 Claude 进程的 pid，重启后善后用
   goal TEXT NOT NULL,
   status TEXT NOT NULL,           -- queued / running / stopping / done / failed / stopped / interrupted
+                                  -- 终态：done / failed / stopped / interrupted
   created REAL, started REAL, finished REAL,
   result TEXT, error TEXT,
   report_text TEXT,               -- 要发给 QQ 的回报文字（6.3）
@@ -286,9 +302,17 @@ class TaskManager:
             # asyncio.timeout(timeout_minutes)；记录 result 或 error
         # finally: await self.bridge.report_task(task_id)
     def status(self, conversation, task_id) -> dict   # 状态、耗时、最近 10 条进度、计划
-    async def stop(self, conversation, task_id) -> str  # 'requested' / 'not_running' / 'not_found'
-    async def resume_after_restart(self):          # 启动时把 running/queued 标为 interrupted，并通知主人
+    async def stop(self, conversation, task_id) -> str:
+        # 'requested'（已送达，等结局）/ 'failed'（中断请求本身失败）/ 'not_running' / 'not_found'
+        # 最终结局（已确认停止 / 停止前已完成 / 停止前已失败 / 未确认）随任务回报告知，见 4.2
+    async def recover_after_restart(self):
+        # 所有非终态（queued / running / stopping）都收敛到终态，见下面“重启恢复”
 ```
+
+- **重启恢复**：启动时，非终态的任务先善后再结算。
+  - 有 `runtime_ref` 的，先尽力停掉残留的执行。Codex 调一次 `turn/interrupt`，因为守护进程是独立进程，桥接重启后那一轮可能还在跑。Claude 按 pid 检查进程是否还在、命令行是不是 `claude`，是就终止它的进程组。systemd 服务默认（`KillMode=control-group`）会在停止时清理同一 cgroup 里的子进程，这里只是兜底。
+  - 然后结算：queued 记为 interrupted（重启前还没开始）；running 记为 interrupted；stopping 记为 stopped（重启时仍在停止中，按已停止处理，部分操作可能已经执行）。
+  - 最后全部进入 6.3 的回报流程，告诉主人。
 
 - 任务对象挂在 Bridge 上，不挂在 `session()` 上：现在 worker 在 WebSocket 断开时会被取消，任务不能跟着断。
 - 回报时 QQ 恰好断线，就保留 `reported=0`，重连后补报。
@@ -401,13 +425,15 @@ Claude Code ──stdio──▶ python3 -m qq_chat.front_tools     （每轮由
 - 验收：`front: "claude"` 时，主人和访客都能聊；访客 `init.tools` 非空即中止；改 SOUL.md 下一条生效；重启后会话续上；流式回复照常分气泡发送。
 
 **PR3：任务与命令（先手动分派）**
-- `tasks.py`、`tasks` 表、`report_task()` 回报状态机、`deliver()` 抽取、会话锁（7 节的范围）、全局写锁，以及主人命令 `/task <目标>`、`/tasks`、`/stop [编号|all]`（BACKLOG #6）。
+- `tasks.py`、`tasks` 表、`report_task()` 回报状态机、`deliver()` 抽取、会话锁（7 节的范围）、全局写锁、重启恢复（6.2），以及主人命令 `/task <目标>`、`/tasks`、`/stop [编号|all]`（BACKLOG #6）。
+- 分离模式下主人前台用 NONE 和手动版 `FRONT_DESK`（5 节）。
+- `AppServer.turn()` 把 interrupted 和 failed 区分开（4.2）。
 - `/stop` 的语义（顺带回答 BACKLOG #6 的待定项）：不带参数停当前会话正在跑的前台轮次；`/stop 12` 停单个任务；`/stop all` 停本会话所有运行中的任务，并取消排队中的任务。只作用于发起命令的会话。
-- 验收：任务运行期间前台照常回话；任务结果只回发起会话；`/stop` 不排队，能区分“已请求 / 已确认 / 失败”；重启后运行中的任务标为 interrupted 并通知主人；非主人用不了这些命令（静默）。
+- 验收：任务运行期间前台照常回话；分离模式下主人前台不会自己改文件；任务结果只回发起会话；`/stop` 不排队，先回“已请求”，结局能区分已确认停止、停止前已完成、停止前已失败、未确认和停止失败；重启后 queued、running、stopping 都收敛到终态并通知主人；非主人用不了这些命令（静默）。
 - 做到这一步，前后台分离已经能从 QQ 用起来了，PR4 只是把“主人手动分派”换成“前台自己判断”。
 
 **PR4：前台工具通道**
-- `front_tools.py`（MCP shim）、`tool_server`、一次性令牌、`FRONT_DESK` 提示。
+- `front_tools.py`（MCP shim）、`tool_server`、一次性令牌、`FRONT_DESK` 提示；分离模式的主人前台从 NONE 换成 FRONT。
 - 验收：分离模式下，主人说“帮我修个 bug”时前台会分派；访客的消息永远不带 MCP；群里主人分派的任务回报到该群；三道上限生效。
 
 **PR5：多后台**
@@ -426,6 +452,9 @@ Claude Code ──stdio──▶ python3 -m qq_chat.front_tools     （每轮由
 - 回报：任务结果只发到发起会话；失败任务的降级文字写“失败”而不是“完成”；`report_text` 已有时补发不调用模型；断线时 `reported=0`，重连后补报；`/new` 之后的回报进入新会话；回报轮次拿不到分派工具。
 - 级别：FULL 的 `init.tools` 出现 `mcp__qq__*` 时中止；FULL 的 profile 没写 `permission_mode` 时拒绝启动。
 - 写锁：两个不同 profile 的写任务不会同时运行；只读 profile 不受影响。`writes` 声明与 sandbox 不符时拒绝启动。
+- 中断结局：假 App Server 分别返回 interrupted、completed、failed 和超时，任务分别落到 stopped、done、failed 和 stopping；中断 RPC 报错时回到 running，`/stop` 回复“停止失败”。
+- 重启恢复：库里预置 queued、running、stopping 各一条，启动后分别变成 interrupted、interrupted、stopped，有 `runtime_ref` 的收到一次善后调用，三条都进入回报流程。
+- 阶段衔接：分离模式且工具通道不可用时，主人前台的 level 是 NONE。
 - 模型隔离：Codex 的模型选择不会传给 Claude profile，反之亦然。
 - `/stop`：在 `session()` 里处理，不进队列；非主人静默。
 
@@ -436,7 +465,8 @@ Claude Code ──stdio──▶ python3 -m qq_chat.front_tools     （每轮由
 3. WSL 上的冷启动耗时；如果明显变慢，再考虑每个会话一个长驻进程。
 4. Codex App Server 有没有中途追加消息的接口（决定 `send_to_task` 的实现）；Codex 在分离模式下当前台时，能否通过 `thread/start` 的 `config` 挂 MCP。
 5. 换成 Claude 前台后，人设的表现要重新调：被认真问到“你是不是 AI”时的反应、语气、长度控制都会和 Codex 不同。
-6. 多个写任务同时改同一仓库：先靠 `max_parallel: 1` 避免冲突，以后再按任务开 git worktree。
+6. 多个写任务同时改同一仓库：目前靠第 5 节的全局写锁（`tasks.max_writers`，默认 1）串行执行，以后按任务开 git worktree 再放开。
+7. 中断的实际表现：Claude 被 SIGINT 后 `result` 的 subtype 和退出码（决定 4.3 第 6 条的判定规则），以及本机 App Server 的 turn 状态取值（4.2 的表）。
 
 ## 附录 A：实测用的最小 MCP 服务器
 
@@ -483,7 +513,9 @@ for line in sys.stdin:
 
 `-I` 隔离模式不读 `PYTHONPATH`、不把当前目录加入导入路径，所以 shim 要按绝对路径运行，并且只用标准库、不写包内相对导入。`command` 用 `sys.executable`，保证和桥接是同一个 Python。
 
-## 14. 审阅修订记录（v2，2026-10-27）
+## 14. 审阅修订记录（2026-10-27）
+
+### 第一轮（v2）
 
 v1 交给 Codex 对照代码审阅后，以下意见全部采纳：
 
@@ -496,3 +528,12 @@ v1 交给 Codex 对照代码审阅后，以下意见全部采纳：
 | 每个 profile 限一个写任务，挡不住不同 profile 同时写 | 成立。新增全局写锁和 `writes` 声明 | 5 节、6.2 |
 | FULL 同时指单 agent 主人和后台任务；工具白名单与回报轮次的分派权限要明确 | 成立。拆成 role 和 level 两个维度；回报轮次 level=NONE | 4.1、4.3、6.3 |
 | Claude 参数和性能是外部实测，本机未复验 | 成立。PR2 第一步在 WSL 复验 | 0 节、11 节 PR2 |
+
+### 第二轮（v3）
+
+| 审阅意见 | 结论 | 改在哪里 |
+| --- | --- | --- |
+| 分离模式要求 FRONT，但 FRONT 依赖 PR4 的工具通道；PR3 期间主人前台用什么级别 | 成立。PR4 之前用 NONE 加手动版 `FRONT_DESK`，不用 FULL 过渡（会绕开写锁）；想直接干活就先保持 `back: []` | 4.1、5 节、11 节 PR3/PR4 |
+| “状态不是 completed”就算停止，会把 failed 也算进去 | 成立。按 interrupted / completed / failed / 超时分别结算；新增 `Interrupted` 异常 | 4.1、4.2、4.3、6.2 |
+| 重启恢复漏了 stopping | 成立。所有非终态都收敛到终态，并先按 `runtime_ref` 善后 | 6.1、6.2 |
+| 13 节第 6 条还写着靠 `max_parallel: 1` 防写冲突 | 成立。改为全局写锁 | 13 节 |
