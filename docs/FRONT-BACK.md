@@ -2,7 +2,7 @@
 
 本文是 `qq-chat` 前后台分离的实施方案，基于 `65361f4`（2026-10-27）的代码。可以放进 `docs/`，按第 11 节分阶段实现；每个阶段完成后，把对应内容写进 `docs/FEATURES.md`、`docs/ARCHITECTURE.md` 和 `docs/CHANGELOG.md`，本文只保留未完成部分。
 
-v3：已按 2026-10-27 的两轮代码审阅意见修订，改动对照见第 14 节。
+v4：已按 2026-10-27 的三轮代码审阅意见修订，改动对照见第 14 节。
 
 ## 0. 结论
 
@@ -197,7 +197,7 @@ def user_message(text, images):
 1. **会话 ID**：首轮由桥接生成 `uuid4`，先写入 `agent_sessions`，再用 `--session-id` 启动；之后用 `--resume`。续接失败（会话文件丢失）时清掉映射重开，同现在处理 `no rollout found` 的方式一样。
 2. **系统提示**：怎么写看 level，写什么看 role（4.1）。NONE 和 FRONT 没有内置工具，用 `--system-prompt-file` 整个替换默认提示，提示更短，也没有“我是 Claude Code”的身份。FULL 要用工具，不管是单 agent 的主人对话还是后台任务，都用 `--append-system-prompt-file` 追加，保留 Claude Code 自带的工具用法说明。提示文件写在 `run/` 下，权限 600。**不要用 `--system-prompt` 直接传文字**：命令行参数在 `ps` 里所有本机用户都能看到，而 OWNER.md 里有个人资料。
 3. **工作目录**：用桥接专用的空目录（如 `run/front/`）。不加 `--bare` 时，`-p` 会执行 cwd 里 `.claude/settings.json` 的 hooks，连接 `.mcp.json`，而且没有信任提示。所以前台不能用 `workspace/` 或任何仓库当 cwd。
-4. **子进程**：`asyncio.create_subprocess_exec(..., limit=16 * 1024 * 1024, start_new_session=True)`。默认 64KB 的行长上限遇到大段工具结果会报错。
+4. **子进程**：`asyncio.create_subprocess_exec(..., limit=16 * 1024 * 1024, start_new_session=True)`。默认 64KB 的行长上限遇到大段工具结果会报错。后台任务的进程一启动就记录身份，写进 `tasks.runtime_ref`：pid、pgid、`/proc/<pid>/stat` 里的启动时间、`/proc/sys/kernel/random/boot_id`、`/proc/<pid>/cgroup`，以及通过环境变量传入的一次性随机串 `QQ_TASK_NONCE`。重启善后靠这些判断进程归属（6.2）。
 5. **事件处理**：
 
    | 事件 | 处理 |
@@ -253,7 +253,7 @@ def user_message(text, images):
 - `tasks.progress`：`direct` 把后台进度节流后直接发到 QQ；`silent` 不推送，只在前台调用 `task_status` 时返回。主人在群里的任务建议用 `silent`。
 - 启动时校验：`front`、`guest` 和 `back` 引用的 profile 必须存在，`type` 必须已知，否则拒绝启动并打印原因。
 - 改了配置用 `tools/restart_bridge.py` 重启。运行时切换（`/front claude`）可以以后再加，写回配置沿用 `moderation.update_blacklist()` 的加锁原子替换方式。
-- 后台 profile 必须显式写 `writes`。Codex 的 `sandbox` 不是 `read-only` 时，`writes` 必须为 true；Claude 的 FULL 工具里有 Bash、Edit 或 Write 时也必须为 true。声明与实际不符就拒绝启动。所有 `writes: true` 的 profile 共用一个全局写锁（`tasks.max_writers`，默认 1），和各自的 `max_parallel` 同时满足才能开工。等以后做了按任务开 git worktree，再放开这个限制。
+- 后台 profile 必须显式写 `writes`。Codex 的 `sandbox` 不是 `read-only` 时，`writes` 必须为 true；Claude 的 FULL 工具里有 Bash、Edit 或 Write 时也必须为 true。声明与实际不符就拒绝启动。所有 `writes: true` 的 profile 共用一个全局写锁（`tasks.max_writers`，默认 1），和各自的 `max_parallel` 同时满足才能开工。处于 `orphaned`（重启后无法确认已结束，见 6.2）的写任务同样占着写锁。等以后做了按任务开 git worktree，再放开这个限制。
 - 切换前台以后，新 profile 没有旧对话的上下文。新会话第一轮从 `history` 表带上最近的记录：从新往旧取，最多 20 条、总共 8000 字，单条超过 1000 字截断（`bootstrap` 表按新的 session ID 记录）。注意现在的 `history_import` 导入的是全部历史：PR1 不动它，PR2 改成上面的预算，对所有 profile 一致（包括 Codex 新开的线程，属于行为变化，要写进 CHANGELOG）。
 - 模型选择按“会话 + profile”保存（6.1 的 `profile_models`），一个 profile 永远拿不到另一个 profile 的模型名。
 
@@ -276,10 +276,10 @@ CREATE TABLE IF NOT EXISTS tasks (
   conversation TEXT NOT NULL,     -- 发起任务的会话键，结果只回这里
   source TEXT NOT NULL,           -- Source 的 JSON，回报时用来发送
   agent TEXT NOT NULL, session_id TEXT,
-  runtime_ref TEXT,               -- Codex 的 turn_id 或 Claude 进程的 pid，重启后善后用
+  runtime_ref TEXT,               -- JSON。Codex：thread_id + turn_id；Claude：4.3 第 4 条的进程身份
   goal TEXT NOT NULL,
-  status TEXT NOT NULL,           -- queued / running / stopping / done / failed / stopped / interrupted
-                                  -- 终态：done / failed / stopped / interrupted
+  status TEXT NOT NULL,           -- queued / running / stopping / orphaned / done / failed / stopped / interrupted
+                                  -- 终态：done / failed / stopped / interrupted；orphaned 见 6.2
   created REAL, started REAL, finished REAL,
   result TEXT, error TEXT,
   report_text TEXT,               -- 要发给 QQ 的回报文字（6.3）
@@ -306,13 +306,21 @@ class TaskManager:
         # 'requested'（已送达，等结局）/ 'failed'（中断请求本身失败）/ 'not_running' / 'not_found'
         # 最终结局（已确认停止 / 停止前已完成 / 停止前已失败 / 未确认）随任务回报告知，见 4.2
     async def recover_after_restart(self):
-        # 所有非终态（queued / running / stopping）都收敛到终态，见下面“重启恢复”
+        # 非终态（queued / running / stopping）要么确认结束后结算，要么进入 orphaned，见下面“重启恢复”
 ```
 
-- **重启恢复**：启动时，非终态的任务先善后再结算。
-  - 有 `runtime_ref` 的，先尽力停掉残留的执行。Codex 调一次 `turn/interrupt`，因为守护进程是独立进程，桥接重启后那一轮可能还在跑。Claude 按 pid 检查进程是否还在、命令行是不是 `claude`，是就终止它的进程组。systemd 服务默认（`KillMode=control-group`）会在停止时清理同一 cgroup 里的子进程，这里只是兜底。
-  - 然后结算：queued 记为 interrupted（重启前还没开始）；running 记为 interrupted；stopping 记为 stopped（重启时仍在停止中，按已停止处理，部分操作可能已经执行）。
-  - 最后全部进入 6.3 的回报流程，告诉主人。
+- **重启恢复**：原则是**先确认执行真的结束，再结算；确认不了就不放行写任务。** “发过中断”不等于“已经停了”。
+  - queued：从没开始执行，直接记为 interrupted（重启前还没开始）。
+  - running、stopping 且有 Codex 的 `runtime_ref`：重新订阅该线程，调一次 `turn/interrupt`，然后通过 App Server 确认这一轮已经结束：收到这一轮的 `turn/completed`，或者查到线程里这一轮已不在进行中。具体用哪个方法查，以本机协议为准（13 节第 7 条）。确认后按实际状态结算：interrupted 时，原来是 running 的记为 interrupted、原来是 stopping 的记为 stopped；completed 记为 done，照常回报结果；failed 记为 failed。
+  - running、stopping 且有 Claude 的 `runtime_ref`：先核对进程归属，全部吻合才算“是我们的进程”。要核对的有：同一个 boot_id；pid 对应进程的启动时间与记录一致；cgroup 与记录一致；能读到 `/proc/<pid>/environ` 时，`QQ_TASK_NONCE` 也一致。
+    - pid 不存在，或者启动时间、boot_id 对不上：原进程已经退出（pid 可能被别的进程复用了），不发任何信号。再扫一遍 `/proc`，看有没有 pgid 相同、cgroup 相同、启动时间不早于原进程的残留子进程。没有，就算确认结束。
+    - 全部吻合：按 4.3 第 6 条的顺序发信号，直到这个进程组里没有进程了，才算确认结束。
+    - 只有部分吻合，或者信息读不全：不发信号，免得误杀，按“确认不了”处理。
+    - 进程已经结束时，拿不到这一轮的结局，原来是 running 的记为 interrupted，stopping 的记为 stopped。
+  - 确认不了（App Server 30 秒内查不到结果、连不上，或 Claude 进程归属判断不了）：任务记为 `orphaned`，不算终态。写任务的 orphaned 继续占着全局写锁，新的写任务排队，只读任务照常运行。立刻告诉主人：“#12 重启前在改文件，无法确认已经停下；确认前新的写任务会排队。”之后每 60 秒重查一次，确认结束就按上面的规则结算并释放写锁。
+  - 人工兜底：主人确认它已经结束（比如自己在终端查过），可以发 `/task release 12`，把任务记为 stopped，注明“主人确认已结束”，并释放写锁。
+  - systemd 服务默认（`KillMode=control-group`）停止时会清理同一 cgroup 里的子进程，所以 Claude 这条路平时很少走到，这里是兜底。
+  - 结算后的任务全部进入 6.3 的回报流程。
 
 - 任务对象挂在 Bridge 上，不挂在 `session()` 上：现在 worker 在 WebSocket 断开时会被取消，任务不能跟着断。
 - 回报时 QQ 恰好断线，就保留 `reported=0`，重连后补报。
@@ -425,11 +433,11 @@ Claude Code ──stdio──▶ python3 -m qq_chat.front_tools     （每轮由
 - 验收：`front: "claude"` 时，主人和访客都能聊；访客 `init.tools` 非空即中止；改 SOUL.md 下一条生效；重启后会话续上；流式回复照常分气泡发送。
 
 **PR3：任务与命令（先手动分派）**
-- `tasks.py`、`tasks` 表、`report_task()` 回报状态机、`deliver()` 抽取、会话锁（7 节的范围）、全局写锁、重启恢复（6.2），以及主人命令 `/task <目标>`、`/tasks`、`/stop [编号|all]`（BACKLOG #6）。
+- `tasks.py`、`tasks` 表、`report_task()` 回报状态机、`deliver()` 抽取、会话锁（7 节的范围）、全局写锁、重启恢复（6.2），以及主人命令 `/task <目标>`、`/task release <编号>`、`/tasks`、`/stop [编号|all]`（BACKLOG #6）。
 - 分离模式下主人前台用 NONE 和手动版 `FRONT_DESK`（5 节）。
 - `AppServer.turn()` 把 interrupted 和 failed 区分开（4.2）。
 - `/stop` 的语义（顺带回答 BACKLOG #6 的待定项）：不带参数停当前会话正在跑的前台轮次；`/stop 12` 停单个任务；`/stop all` 停本会话所有运行中的任务，并取消排队中的任务。只作用于发起命令的会话。
-- 验收：任务运行期间前台照常回话；分离模式下主人前台不会自己改文件；任务结果只回发起会话；`/stop` 不排队，先回“已请求”，结局能区分已确认停止、停止前已完成、停止前已失败、未确认和停止失败；重启后 queued、running、stopping 都收敛到终态并通知主人；非主人用不了这些命令（静默）。
+- 验收：任务运行期间前台照常回话；分离模式下主人前台不会自己改文件；任务结果只回发起会话；`/stop` 不排队，先回“已请求”，结局能区分已确认停止、停止前已完成、停止前已失败、未确认和停止失败；重启后 queued、running、stopping 确认结束才结算，确认不了就进入 orphaned 并挡住新的写任务，两种情况都通知主人；非主人用不了这些命令（静默）。
 - 做到这一步，前后台分离已经能从 QQ 用起来了，PR4 只是把“主人手动分派”换成“前台自己判断”。
 
 **PR4：前台工具通道**
@@ -453,7 +461,8 @@ Claude Code ──stdio──▶ python3 -m qq_chat.front_tools     （每轮由
 - 级别：FULL 的 `init.tools` 出现 `mcp__qq__*` 时中止；FULL 的 profile 没写 `permission_mode` 时拒绝启动。
 - 写锁：两个不同 profile 的写任务不会同时运行；只读 profile 不受影响。`writes` 声明与 sandbox 不符时拒绝启动。
 - 中断结局：假 App Server 分别返回 interrupted、completed、failed 和超时，任务分别落到 stopped、done、failed 和 stopping；中断 RPC 报错时回到 running，`/stop` 回复“停止失败”。
-- 重启恢复：库里预置 queued、running、stopping 各一条，启动后分别变成 interrupted、interrupted、stopped，有 `runtime_ref` 的收到一次善后调用，三条都进入回报流程。
+- 重启恢复（Codex）：假 App Server 确认结束时，queued、running、stopping 分别变成 interrupted、interrupted、stopped；确认时发现这一轮其实已 completed，就记为 done；查询超时时变成 orphaned，新的写任务排队、只读任务照常运行，之后确认结束再结算并放行；`/task release` 能人工释放。
+- 重启恢复（Claude）：用假的 `/proc` 数据分别模拟 pid 不存在、pid 被复用（启动时间不同）、全部吻合、只有部分吻合四种情况。断言只有“全部吻合”时才发信号；部分吻合时不发信号，并进入 orphaned。
 - 阶段衔接：分离模式且工具通道不可用时，主人前台的 level 是 NONE。
 - 模型隔离：Codex 的模型选择不会传给 Claude profile，反之亦然。
 - `/stop`：在 `session()` 里处理，不进队列；非主人静默。
@@ -466,7 +475,7 @@ Claude Code ──stdio──▶ python3 -m qq_chat.front_tools     （每轮由
 4. Codex App Server 有没有中途追加消息的接口（决定 `send_to_task` 的实现）；Codex 在分离模式下当前台时，能否通过 `thread/start` 的 `config` 挂 MCP。
 5. 换成 Claude 前台后，人设的表现要重新调：被认真问到“你是不是 AI”时的反应、语气、长度控制都会和 Codex 不同。
 6. 多个写任务同时改同一仓库：目前靠第 5 节的全局写锁（`tasks.max_writers`，默认 1）串行执行，以后按任务开 git worktree 再放开。
-7. 中断的实际表现：Claude 被 SIGINT 后 `result` 的 subtype 和退出码（决定 4.3 第 6 条的判定规则），以及本机 App Server 的 turn 状态取值（4.2 的表）。
+7. 中断的实际表现：Claude 被 SIGINT 后 `result` 的 subtype 和退出码（决定 4.3 第 6 条的判定规则）；本机 App Server 的 turn 状态取值（4.2 的表）；重启后用哪个方法确认某一轮已经结束（6.2）。
 
 ## 附录 A：实测用的最小 MCP 服务器
 
@@ -537,3 +546,12 @@ v1 交给 Codex 对照代码审阅后，以下意见全部采纳：
 | “状态不是 completed”就算停止，会把 failed 也算进去 | 成立。按 interrupted / completed / failed / 超时分别结算；新增 `Interrupted` 异常 | 4.1、4.2、4.3、6.2 |
 | 重启恢复漏了 stopping | 成立。所有非终态都收敛到终态，并先按 `runtime_ref` 善后 | 6.1、6.2 |
 | 13 节第 6 条还写着靠 `max_parallel: 1` 防写冲突 | 成立。改为全局写锁 | 13 节 |
+
+### 第三轮（v4）
+
+| 审阅意见 | 结论 | 改在哪里 |
+| --- | --- | --- |
+| 尽力中断后就把 stopping 记为 stopped，不能证明执行已结束；旧写任务可能还在跑，会和新写任务撞车 | 成立。先确认结束再结算；确认不了记为 `orphaned`，继续占着写锁，每 60 秒重查，主人可用 `/task release` 人工释放 | 5 节、6.1、6.2、11 节 PR3、12 节 |
+| 只凭 PID 和命令行判断 Claude 进程归属，可能误杀复用了 PID 的进程 | 成立。启动时记录 pid、pgid、启动时间、boot_id、cgroup、`QQ_TASK_NONCE`，全部吻合才发信号，部分吻合不发信号并进入 orphaned | 4.3、6.1、6.2、12 节 |
+
+这两条都只影响 PR3，不影响 PR1。
