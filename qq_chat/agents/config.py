@@ -17,9 +17,12 @@ def settings(cfg):
     if not all(isinstance(name, str) for name in back):
         raise ValueError('Invalid background profile')
     front, guest = agents.get('front'), agents.get('guest', agents.get('front'))
+    group_guest = agents.get('group_guest', guest)
     profiles = dict(agents['profiles'])
     if not isinstance(front, str) or not isinstance(guest, str) or front not in profiles or guest not in profiles:
         raise ValueError('front and guest must reference defined profiles')
+    if not isinstance(group_guest, str) or group_guest not in profiles:
+        raise ValueError('group_guest must reference a defined profile')
     if any(name not in profiles for name in back):
         raise ValueError('Unknown background profile')
     for name, profile in profiles.items():
@@ -64,7 +67,7 @@ def settings(cfg):
                     if not isinstance(levels, list) or not all(isinstance(level, dict) and isinstance(level.get('reasoningEffort'), str) for level in levels):
                         raise ValueError('Invalid configured reasoning efforts')
     groks = [name for name, p in profiles.items() if p['type'] == 'grok_build']
-    if groks and (any(name in back for name in groks) or guest in groks or (front in groks and back)):
+    if groks and (any(name in back for name in groks) or guest in groks or group_guest in groks or (front in groks and back)):
         raise ValueError('Grok supports only owner single-agent front, separate non-Grok guest and empty back')
     for name in groks:
         if profiles[name].get('permission_mode') != 'bypassPermissions' or profiles[name].get('sandbox') != 'off':
