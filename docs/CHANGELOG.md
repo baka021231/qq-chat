@@ -2,6 +2,12 @@
 
 ## 2026-10-28
 
+### 主人前台切换与自动重启
+
+- 新增主人专用 `/front`、`/front 配置名`，直接由接收层处理，绕过聊天队列及模型额度限制。可在 Grok 与 Codex 间切换，访客与后台设置保持不变。
+- 配置两次校验、与黑名单共享文件锁、原子备份及写入；确认消息发送成功后由独立 systemd 任务重启，检查 QQ 重连并私聊回报。失败尝试恢复，避免覆盖并发配置修改。
+- 新增 13 项忙碌 worker 及身份边界、重复请求、调度与回执失败、独立服务、备份/恢复/并发修改测试，并扩展管理命令权限测试。全量 208 项：206 通过、2 项既有音频依赖测试跳过；独立 systemd 任务在本机实际调度成功。
+
 ### Grok 主人单 agent 前台
 
 - 新增 GrokAgent 与 grok_build profile；仅主人 CHAT/FULL、back 为空，访客继续独立 Claude Haiku。显式 bypassPermissions/sandbox off 对齐原 Codex 主人操作权限，不扩展 Linux 用户或 Windows 只读边界。

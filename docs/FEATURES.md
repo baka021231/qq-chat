@@ -14,6 +14,13 @@ Claude 访客使用 NONE：safe-mode、两个禁用 CLAUDE.md/自动记忆的环
 
 Claude `/models` 读取 profile 的配置目录，`/model default` 恢复其配置默认模型。可选推理档位仅认模型配置中的 `supportedReasoningEfforts`，未声明时不开放 `/effort` 切换。首次运行前的 Claude 模型状态来自配置别名；收到 init 后显示实际返回的型号。
 
+## 前台紧急切换
+
+- 主人使用 `/front` 查看当前前台与可用 profile，`/front codex`、`/front grok` 切换并自动重启；作用于所有主人会话，访客、后台配置保持原样。与仅影响当前会话的 `/model` 不同。
+- 命令由桥接接收层直接处理，不经过模型或聊天队列；模型额度耗尽、前台正在执行或队列满时仍可切换。重启会中断当前前台轮次，已有会话按 profile 保留。
+- 切换前后各做配置校验；私有备份保留在 `config.json.bak` 和 `run/front-switch/`。先发确认，再由独立 systemd 用户任务写配置、调用重启工具并检查 QQ 重连，最后私聊回报。部署需要 systemd 用户服务。
+- 同一前台不重启；非主人不能查看或切换。配置无效、回执发送失败或无法调度时不改变配置。重启失败时尝试恢复原配置并重启；发现并发配置修改则保留现场并报告失败，不覆盖人工更改。
+
 ## Grok 主人单 agent
 
 - `grok_build` 仅用于主人前台，必须 `back: []` 且访客使用其他后端。主人为 CHAT/FULL，沿用 Linux 用户权限与工作目录；显式 `bypassPermissions`、`sandbox: off`，可读写文件、执行命令及联网，Windows 只读等工作台约束仍在。

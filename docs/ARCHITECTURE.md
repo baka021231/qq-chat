@@ -8,7 +8,7 @@
 
 ```
 NapCat ──WebSocket──▶ Bridge.session()  事件分发、过滤、去重、记录群聊
-                         ├ /stop、/tasks → 控制协程（不排队）
+                         ├ /stop、/tasks、/front → 控制协程（不排队）
                          │ queue（容量 8）
                          ▼
                       Bridge.worker()    命令、附件、图片、长度检查（单个 worker，逐条处理）
@@ -206,3 +206,11 @@ GrokAgent 使用现有 agent_sessions/old_agent_sessions/profile_models 存储�
 Grok 续接时会缓存首次系统规则，单纯更换 --agent 文件未能刷新旧人设。因此命令行只传恒定公开 BRIDGE_RULES；动态 SOUL/OWNER、工作台规则、用户输入和图片内容块每轮存入 600 权限 prompt JSON，CLI --prompt-file 读入，finally 删除。每轮公开系统约定采用 current_bridge_rules，已用两轮合成设定及公开历史词验证更新与续接同时生效。图片为原生 ACP image/data/mimeType 格式，不把 base64 或个人文本放进 argv。
 
 只解析已校验 init 之后的顶层 assistant text；忽略 thinking、签名和子 agent 数据，不对原始 stderr 做日志输出。整轮成功且未含伪调用/回执才交给现有回调，保留最大返回值与完整历史侧通道。原生 result.cancelled 或本轮发过中断且进程未成功结束时抛 Interrupted；普通失败不重试，防止重复执行。取消/超时清理本轮进程组及提示文件。模型目录使用明确配置，本机 models 实测当前默认且可用 grok-4.7；不继承旧 Codex 的模型/effort。
+
+## 独立于模型的前台切换
+
+`Bridge.session()` 直接分发 `/front` 至 `front_switch.command()`，按真实 Source 校验主人，不获取会话锁、不进入 worker。`/front` 列出通过现有 `settings()` 校验的 profile；切换只修改 `agents.front`，旧配置隐含的 guest 会先固定为原值，避免访客跟随切换。每个 profile 的线程和模型状态仍由现有数据库保存。
+
+命令先生成 0600 私有任务记录、发送 QQ 确认，再经 systemd-run 创建独立用户服务（2 秒后执行），避免桥接停止时连同重启任务一起被杀死。`python -m qq_chat.front_switch --job UUID` 重新读取和校验最新配置，与黑名单写入共享文件锁，合并前台字段，原子保存两份私有备份及新配置。重复切换被持久任务状态和进程内锁拦截；记录超过 300 秒可再次操作，服务最长执行 240 秒。
+
+独立任务调用 `tools/restart_bridge.py`，检查服务 PID 变化、NapCat 重连日志和持续存活，然后直接私聊回报，不依赖前台模型。失败时仅在当前配置仍与本任务写入值完全一致时恢复快照并复验，避免覆盖并发人工修改。若恢复或通知失败，私有任务文件保留状态供诊断。需要可用的 systemd 用户服务和原有 OneBot 连接。
