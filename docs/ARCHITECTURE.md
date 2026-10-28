@@ -232,3 +232,9 @@ Grok 续接时会缓存首次系统规则，单纯更换 --agent 文件未能刷
 `message_references.py`识别reply/forward数组段，在worker内用已有OneBot通道获取get_msg/get_forward_msg及有界内联/嵌套节点。Incoming新增references，事件接收与入队保留这些段，但不在WebSocket接收循环await获取，否则无法处理对应echo回执。普通群消息仍沿用触发规则；静默卡片只留占位，不主动展开。
 
 引用结果按当前来源校验get_msg范围，并以JSON参考区块置于真实speaker_message之前，署名不授予身份权限；参考图片沿用现有主人图片下载路径，群友仅文字，文件/语音/视频不下载。管理命令检查用当前直接文字，不看参考正文。节点、调用数、深度、文本与超时预算见FEATURES；日志不写引用正文。参考获取失败以提示进入当前轮，原文字请求仍可处理。
+
+## 群聊参考增量位置
+
+`group_context_cursors`以(conversation, profile, session_id)为键保存last_id。group_reference读取id大于已处理位置、小于当前触发context_id的最近有限消息，保留40条/12000字上限。成功完成模型轮次后与bootstrap同事务推进到触发context_id，不用生成结束时的群消息最大ID，因此生成期间收到的消息不会漏掉；失败不推进。主人与群友会话、不同群/profile/session各自隔离，数据库持久化支持重启续用。
+
+首次无位置使用原有近期参考；显式/new清除当前会话/profile的位置，并写入空session_id的重置起点（/new消息的context_id，没有消息ID的内部调用才取当前群最大ID），之后新session不重放重置前记录。旧群上下文和其他会话位置不删除。

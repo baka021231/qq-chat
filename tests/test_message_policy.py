@@ -257,6 +257,7 @@ class MessagePolicyTests(unittest.TestCase):
                 CREATE TABLE bootstrap (thread_id TEXT PRIMARY KEY);
                 CREATE TABLE history (role TEXT, content TEXT, conversation TEXT);
                 CREATE TABLE group_context (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER, content TEXT);
+                CREATE TABLE group_context_cursors (conversation TEXT,profile TEXT,session_id TEXT,last_id INTEGER,PRIMARY KEY(conversation,profile,session_id));
             ''')
             calls = []
             prompts = []
