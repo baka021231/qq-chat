@@ -683,3 +683,7 @@ v1 交给 Codex 对照代码审阅后，以下意见全部采纳：
 - 工具调用不拿会话锁，前台等待 MCP 时可直接建任务或发回执；后台结果回报等待该会话锁。回报 CHAT/NONE 明确清空 grant，不拿任何派发工具。
 - 本机用真实 Claude sonnet、全部六个工具和实际 stdio/Unix 链路成功创建一个合成任务，桥接确实生成回执，前台结束令牌撤销，全轮约 8.787 秒；后台为 FakeAgent，QQ 发送替身，没有实际后台操作或 QQ 动作。其余权限、失败、取消、补报由离线测试覆盖。
 - 部署目标：主人 claude_front/sonnet（FRONT），访客 claude_guest/haiku（NONE），后台 codex；配置样例见 config.front-back.example.json。当前线上配置、数据库和服务不改。未合并、未重启，未开始 PR5，等待主人确认后部署并 QQ 验收。
+
+### 主人另行授权：Grok 单 agent（2026-10-28）
+
+主人已登录 Grok，并明确“现在先做最简单的模式，给 grok 和现在 codex 一样的权限”。据此只接主人 CHAT/FULL 单 agent 前台，后台为空，访客 Haiku 保持，原 PR5 多后台与 Grok FRONT 工具通道不在本次范围。grok_build 的 NONE/FRONT/TASK 和访客路由均拒绝。操作权限为已有 Linux 用户下自动批准执行、sandbox off，工作台根权限和 Windows 只读边界保留。会话、/new、模型、图片与 /stop 接入现有接口；详细实现及验证见 ARCHITECTURE 与 CHANGELOG。Grok 缓存旧系统规则的差异通过每轮私有输入 current_bridge_rules 处理，动态个人设定不进入命令行。

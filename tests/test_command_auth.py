@@ -81,6 +81,13 @@ class CommandAuthTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(server.grants,{})
             self.assertEqual(list(Path(folder).iterdir()),[])
 
+    async def test_grok_front_selection_does_not_open_model_management_to_guests(self):
+        self.bridge.cfg['agents']={'front':'grok','guest':'codex','back':[]}
+        # Authorization must run before looking up the new owner's model backend.
+        await self.dispatch(Source('group',999,789,'主人'),'/models')
+        self.assertIn('仅限主人',self.sent[-1])
+        self.assertNotIn('grok-4.7',self.sent[-1])
+
     async def test_owner_can_reset_only_own_group_thread(self):
         await self.dispatch(Source('group', 999, 123), '/new')
         threads = dict(self.bridge.db.execute('SELECT * FROM threads'))

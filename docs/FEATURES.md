@@ -14,6 +14,15 @@ Claude 访客使用 NONE：safe-mode、两个禁用 CLAUDE.md/自动记忆的环
 
 Claude `/models` 读取 profile 的配置目录，`/model default` 恢复其配置默认模型。可选推理档位仅认模型配置中的 `supportedReasoningEfforts`，未声明时不开放 `/effort` 切换。首次运行前的 Claude 模型状态来自配置别名；收到 init 后显示实际返回的型号。
 
+## Grok 主人单 agent
+
+- `grok_build` 仅用于主人前台，必须 `back: []` 且访客使用其他后端。主人为 CHAT/FULL，沿用 Linux 用户权限与工作目录；显式 `bypassPermissions`、`sandbox: off`，可读写文件、执行命令及联网，Windows 只读等工作台约束仍在。
+- Grok Build 1.0.70 / grok-4.7 已实测。访客仍走原 Haiku NONE，不授予 Grok 或主人资料；本阶段不接 Grok 的无工具访客、FRONT MCP 或后台任务。
+- 每个主人会话/profile 独立 UUID，支持续接、/new 归档、/models 与 /model，旧 Codex 历史按现有预算导入。缺失或失败会话不自动重试执行，必要时主人用 /new 重建。
+- 人设与当前消息经 600 权限的 JSON 输入文件每轮刷新，不出现在命令行；CLI 的恒定公开规则要求采用本轮实时设定，避免续接缓存旧人设。原生项目规则保留。
+- 文本、图片通过 ACP 内容块输入。输出只取顶层文本，忽略 thinking/签名/工具结果，完整校验后走原气泡和语音路径；返回值最多 12000 字，完整校验文字用于主人历史。
+- /stop 中断当前 Grok 进程组，按真实 result/退出区分停止和完成。已实测停止工具中的等待命令，子命令退出且没有继续写完成标记。
+
 ## 后台任务与停止（PR3）
 
 - 主人可用 `/task 完整目标` 创建任务，后台不读取聊天记录；桥接直接给出任务编号回执。后台运行时前台仍可聊天，前台 worker 本身仍只有一个。

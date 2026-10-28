@@ -39,6 +39,7 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔随机 2～3 �
 | `agents/base.py` | `Agent`、`TurnRequest`、角色/权限常量和返回值上限；不负责 QQ 策略 | 无 |
 | `agents/codex.py` | `CodexAgent`：线程准备/恢复、状态查询、归档、模型目录与底层 turn 调用 | `agents.base`、`codex_app`、`models` |
 | `agents/__init__.py` | 构建 Codex/Claude profile，Codex profile 共用 transport | `agents.codex`、`agents.claude`、`agents.config` |
+| `agents/grok.py` | 主人单 agent Grok JSONL、私有 ACP 输入、会话/模型/中断；仅 CHAT/FULL | `agents.base`、`agents.claude`（MIME 与进程清理工具）、`prompts` |
 | `agents/claude.py` | Claude JSONL、NONE/FRONT/FULL 启动、工具列表检查、回复校验、进程清理 | `agents.base` |
 | `agents/config.py` | profile 引用、权限模式、模型目录及阶段范围校验 | 无 |
 | `agents/state.py` | 模型偏好迁移与隔离、历史导入预算 | 无 |
@@ -195,3 +196,13 @@ Claude FRONT 不加 safe-mode，设置两个禁用记忆环境变量、空 cwd�
 shim 用 python -I 的绝对路径启动，不导入包；tools/list 向桥接取动态后台枚举与 schema。动作参数不接受来源、QQ 或会话字段，来源只认令牌。任务工具仅查当前会话，返回有长度限制的摘要；poke 根据绑定 Source 调用本机 NapCat send_poke，不能指定第三人。日志记录工具名、来源类型及结局，不记录授权串或任意正文。
 
 创建任务与 receipt_sent=0 同步落库，桥接发送真实回执并确认后置 1，失败不丢任务，工具仍返回真实编号和 pending 回执状态；重连先补回执。旧任务迁移默认 1。send_to_task 写 task_inputs，任务完成一轮后在原 profile/写占用下续接同一 session，使用创建时的总执行期限。Codex 启动每轮时记录 runtime_ref；人工 check 使用精确 turn_id，防止续轮后拿别的轮次推断。
+
+## Grok 单 agent 接入
+
+主人明确选择与当前 Codex 相同的操作权限、关闭后台的最简模式。配置类型为 grok_build，仅准用于 owner front；guest 不可引用，back 不可包含 Grok，Grok 前台时 back 必须为空。每个 profile 明确 permission_mode=bypassPermissions 和 sandbox=off，避免配置名义与实际命令不一致；Bridge 的身份校验不改，访客仍使用既有 Claude NONE。
+
+GrokAgent 使用现有 agent_sessions/old_agent_sessions/profile_models 存储，旧 Codex 迁移身份不变。每轮 `--session-id` 或 `--resume`，输出 streaming-messages-json，关闭子 agent 自动派生。启动校验 session、权限模式、核心文件/终端工具，以及不加载 qq 派单工具；不支持 NONE/FRONT/TASK 的请求在启动前拒绝。
+
+Grok 续接时会缓存首次系统规则，单纯更换 --agent 文件未能刷新旧人设。因此命令行只传恒定公开 BRIDGE_RULES；动态 SOUL/OWNER、工作台规则、用户输入和图片内容块每轮存入 600 权限 prompt JSON，CLI --prompt-file 读入，finally 删除。每轮公开系统约定采用 current_bridge_rules，已用两轮合成设定及公开历史词验证更新与续接同时生效。图片为原生 ACP image/data/mimeType 格式，不把 base64 或个人文本放进 argv。
+
+只解析已校验 init 之后的顶层 assistant text；忽略 thinking、签名和子 agent 数据，不对原始 stderr 做日志输出。整轮成功且未含伪调用/回执才交给现有回调，保留最大返回值与完整历史侧通道。原生 result.cancelled 或本轮发过中断且进程未成功结束时抛 Interrupted；普通失败不重试，防止重复执行。取消/超时清理本轮进程组及提示文件。模型目录使用明确配置，本机 models 实测当前默认且可用 grok-4.7；不继承旧 Codex 的模型/effort。

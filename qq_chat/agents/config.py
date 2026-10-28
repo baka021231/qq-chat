@@ -25,7 +25,7 @@ def settings(cfg):
     for name, profile in profiles.items():
         if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,63}', name):
             raise ValueError('Invalid agent profile name')
-        if not isinstance(profile, dict) or profile.get('type') not in ('codex_app', 'claude_code'):
+        if not isinstance(profile, dict) or profile.get('type') not in ('codex_app', 'claude_code', 'grok_build'):
             raise ValueError('Unknown agent profile type')
         profile = dict(profile)
         profiles[name] = profile
@@ -39,15 +39,15 @@ def settings(cfg):
         else:
             models = profile.get('models', [])
             if not isinstance(models, list) or not models:
-                raise ValueError('Claude profiles require a model catalog')
+                raise ValueError('CLI profiles require a model catalog')
             names = [m if isinstance(m, str) else m.get('model') if isinstance(m, dict) else None for m in models]
             if not all(isinstance(m, str) and m and not m.startswith('-') for m in names):
                 raise ValueError('Invalid Claude model catalog')
             if len(set(names)) != len(names):
                 raise ValueError('Duplicate Claude model names')
             if profile.get('model') not in names:
-                raise ValueError('Claude default model must appear in its catalog')
-            if (name == front or name in back) and profile.get('permission_mode') not in (
+                raise ValueError('CLI default model must appear in its catalog')
+            if profile['type'] == 'claude_code' and (name == front or name in back) and profile.get('permission_mode') not in (
                     'dontAsk', 'acceptEdits', 'auto', 'manual', 'plan', 'bypassPermissions'):
                 raise ValueError('FULL Claude profile requires an explicit permission_mode')
             if not isinstance(profile.get('tools', 'default'), str):
@@ -63,6 +63,12 @@ def settings(cfg):
                     levels = item.get('supportedReasoningEfforts', [])
                     if not isinstance(levels, list) or not all(isinstance(level, dict) and isinstance(level.get('reasoningEffort'), str) for level in levels):
                         raise ValueError('Invalid configured reasoning efforts')
+    groks = [name for name, p in profiles.items() if p['type'] == 'grok_build']
+    if groks and (any(name in back for name in groks) or guest in groks or (front in groks and back)):
+        raise ValueError('Grok supports only owner single-agent front, separate non-Grok guest and empty back')
+    for name in groks:
+        if profiles[name].get('permission_mode') != 'bypassPermissions' or profiles[name].get('sandbox') != 'off':
+            raise ValueError('Grok owner mode requires explicit bypassPermissions and sandbox=off')
     for name in back:
         p = profiles[name]
         if not isinstance(p.get('writes'), bool):
