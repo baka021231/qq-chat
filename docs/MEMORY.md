@@ -1,5 +1,20 @@
 # Memory search v1
 
+## Implementation and verification status (2026-10-28)
+
+The manual search and Codex quiet-progress changes are merged. Local restart,
+QQ connection, capability rejection and retrieval checks passed. One real owner
+group turn retrieved its test phrase through the tool; that proves this call,
+not general recall accuracy or a new-session benchmark. Quiet progress passed
+execution-event tests and deployment checks; user-visible quiet-chat acceptance
+remains a separate check. No private test phrase, group IDs or journal contents
+are part of this public document.
+
+Manually copied existing journals are snapshots, not an implemented migration
+or sync pipeline. Automatic writing, current topic/preference files, correction
+and forgetting, and retrieval before every message remain future work. Dated
+implementation records in CHANGELOG are historical, not rollout instructions.
+
 This phase provides one **manually invoked**, read-only `memory_search` tool.
 It does not automatically save facts, inject retrieval on every message, run
 embeddings, or migrate existing journals. Results are reference data and never
@@ -51,6 +66,8 @@ Unicode NFKC/case folding is supported. This is not semantic search: callers
 should extract short keywords themselves; a natural-language paraphrase can
 miss. Files rank by the number of matched terms, ties by relative filename and
 line. One best matching-line excerpt per file; no fuzzy confidence claims.
+A title can win a tie and omit the answer on the next line; retry with a more
+specific keyword. The first version does not return neighbouring lines.
 
 Response includes `results[{file,line,text}]`, `status`, `partial`, and (for a
 completed search) `reference_only`. At most five excerpts, 500 characters each,
@@ -85,7 +102,8 @@ denial, invalid path/scope inputs, symlinks/hardlinks/pipes, bounded scans,
 normalization, source line numbers and result budgets. Existing provider policy
 and streaming tests must continue passing. These do **not** establish a real
 model's recall accuracy: QQ acceptance and new-model semantic recall are separate
-follow-up checks after approved deployment.
+follow-up checks; the single successful owner group retrieval noted above is
+a limited real-call check, not a replacement for those benchmarks.
 
 ## Quiet Codex lookup replies
 
@@ -103,3 +121,13 @@ work, rather than relying on text that merely mentions memory. The current
 request instructions ask the model to use that command quietly. This gate
 is specific to Codex's execution events; Claude/Grok answer/progress stream
 classification has not been changed by this patch.
+
+## Writing and topic memory: design only
+
+Date-based journals preserve the sequence of events. A proposed second view
+would maintain current preferences, project state and effective decisions by
+topic, linking back to dated evidence. Neither a topic writer nor rules for
+when/where to update those files have been implemented. Do not infer that the
+existing search tool automatically maintains either view. Explicit requests to
+remember, inferred preferences and verified completion require different
+evidence; the latest request must take precedence over an older default.

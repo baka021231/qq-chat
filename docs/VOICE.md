@@ -2,7 +2,7 @@
 
 ## 当前后端：V5 IndexTTS（2026-10-28）
 
-本机 `voice.command` 已改为 `tools/indextts_backend.py`，日常语音仍为关闭状态；本次未重启桥接、未发送 QQ 测试消息。启用时沿用原有 `VoiceReplies` 队列与发送链路，不改变文字、权限或会话逻辑。ONNX 后端及模型保留作手动回退，下方旧实验记录仅描述 ONNX。
+本机 `voice.command` 已改为 `tools/indextts_backend.py`，日常语音仍为关闭状态；该后端接入阶段的验证当时未重启桥接、未发送 QQ 测试消息；这是历史验证边界，不表示之后其他功能没有重启服务。启用时沿用原有 `VoiceReplies` 队列与发送链路，不改变文字、权限或会话逻辑。ONNX 后端及模型保留作手动回退，下方旧实验记录仅描述 ONNX。
 
 主人提供的 `小爱配音_完整包_V5_20261018.zip` 为 Windows 完整发行包。本次仅提取 Linux 推理所需的 IndexTTS 引擎、V5 和共用声学模型、参考音频及许可证，共 293 个文件、5,959,883,760 字节。没有提取 Windows Python、EXE/DLL、界面与安装器、V3 权重；原 ZIP 在真实合成与保留文件校验成功后删除。保留文件及原 ZIP 的 SHA256、各文件大小记录于模型目录 `manifest.json`。V5 GPT 权重另与包内发布记录核对，SHA256 为 `ee5c19bf7c421d6b9ae74f8ab75411d6a57e220ffe515bd131a80d33d3508ebc`。
 
