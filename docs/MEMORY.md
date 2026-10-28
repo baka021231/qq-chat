@@ -10,17 +10,23 @@ execution-event tests and deployment checks; user-visible quiet-chat acceptance
 remains a separate check. No private test phrase, group IDs or journal contents
 are part of this public document.
 
-Original manually copied journals are historical snapshots. Owner private
-searches now refresh managed diary copies on demand (see below), independently
-of those old snapshots. Automatic writing of new facts, current topic files, correction
-and forgetting, and retrieval before every message remain future work. Dated
-implementation records in CHANGELOG are historical, not rollout instructions.
+Direct diary storage is merged and active in this installation. Daily writing,
+the nightly organizer and private retrieval use workspace/memory/private/diary/.
+Queries search it directly without copying or refreshing a cache. After migration
+was verified, the owner authorized deletion of the old workspace journals and
+the retired diary-current / existing-records snapshots; only the canonical diary
+directory remains under private here. Other installations must verify their own
+migration before removing sources (see Direct diary storage).
+
+Automatic fact extraction, topic-file writing, correction/forgetting workflows
+and retrieval before every message remain future work. Dated implementation
+records in CHANGELOG are historical, not rollout instructions.
 
 This phase provides one **manually invoked**, read-only `memory_search` tool.
 It does not automatically save new facts, inject retrieval on every message,
-run embeddings, or move the original journals. The authenticated private search
-path does refresh its managed diary cache before searching. Results are reference data and never
-authorize actions. There is no separate read tool.
+run embeddings, or migrate journals. Diary writing and offline migration are
+separate from retrieval. Results are reference data and never authorize actions.
+There is no separate read tool.
 
 ## Storage and visibility
 
@@ -36,9 +42,8 @@ Visitors receive neither a grant nor tool instructions. `shared` does not give
 visitors permission to search. Unclassified root files are excluded. Scope is
 derived from a bridge-issued per-turn capability, never from model arguments.
 Old mixed journals outside this directory stay outside retrieval; do not copy
-them into `shared`. Prepare reviewed memory files separately. The tool is
-search itself is read-only; the private pre-search synchronizer creates and
-updates its reserved managed-copy directory, never original records.
+them into `shared`. Prepare reviewed memory files separately. Search is read-only:
+it does not create or update records, managed copies or caches.
 
 Directory and file opens use retained directory descriptors with `O_NOFOLLOW`;
 symbolic links (including scoped directories and the memory root), hardlinked
@@ -129,9 +134,11 @@ classification has not been changed by this patch.
 
 Date-based journals preserve the sequence of events. A proposed second view
 would maintain current preferences, project state and effective decisions by
-topic, linking back to dated evidence. Neither a topic writer nor rules for
-when/where to update those files have been implemented. Do not infer that the
-existing search tool automatically maintains either view. Explicit requests to
+topic, linking back to dated evidence. Topic creation/update rules are saved in
+the local reflection rules, but no topic writer has been implemented. Authorized
+owner conversations manually maintain dated records under the local daily rules;
+this is separate from automatic fact extraction. Do not infer that search
+maintains journals or topic files. Explicit requests to
 remember, inferred preferences and verified completion require different
 evidence; the latest request must take precedence over an older default.
 
@@ -150,7 +157,7 @@ or update topic files. Rules for creating new topics, updating existing current
 conclusions and preserving diary evidence are written down for that later
 stage; their presence does not mean a topic writer is enabled. Daily records
 live directly under memory/private/diary/ with our-story/development-logs
-and OUR_STORY.md as the date index (after local migration activation).
+and OUR_STORY.md as the date index; the local migration and rule switch are complete.
 No live model run is required just to save rules; the existing timer need not be
 restarted to pick up the file on its next run. Local rules, organizer, tests and
 private records remain excluded from the public repository.
@@ -168,12 +175,16 @@ organizer lock, or run a model before searching. Private owner queries include
 private/diary; groups still see only shared/ and their own groups/<id>/ scope.
 The service excludes private/diary-current and the generated
 existing-records-<date>-<time>-<microseconds> snapshots. Other manual memory is
-preserved. No all-chat capture, topic writer or semantic search is added.
+preserved. These exclusions remain for compatibility even when the retired
+copies have been deleted, as on this installation. No all-chat capture, topic
+writer or semantic search is added.
 
 For an existing installation, tools/migrate_diaries.py validates the fixed old
 OUR_STORY, our-story and development-logs sources; --apply copies them into the
 canonical directory under the nightly lock. It retains all originals as frozen
-recovery material. Existing identical destination files are skipped; different
+recovery material; it does not delete them. Subsequent cleanup is a separate,
+owner-authorized action after verifying canonical records. Existing identical
+destination files are skipped; different
 content aborts before any writes. Source whitelist, no-follow descriptor opens,
 hardlink rejection and bounded reads protect the offline migration. A partial
 copy can be retried; it is not a multi-file transaction. Migration is never run
