@@ -10,14 +10,16 @@ execution-event tests and deployment checks; user-visible quiet-chat acceptance
 remains a separate check. No private test phrase, group IDs or journal contents
 are part of this public document.
 
-Manually copied existing journals are snapshots, not an implemented migration
-or sync pipeline. Automatic writing, current topic/preference files, correction
+Original manually copied journals are historical snapshots. Owner private
+searches now refresh managed diary copies on demand (see below), independently
+of those old snapshots. Automatic writing of new facts, current topic files, correction
 and forgetting, and retrieval before every message remain future work. Dated
 implementation records in CHANGELOG are historical, not rollout instructions.
 
 This phase provides one **manually invoked**, read-only `memory_search` tool.
-It does not automatically save facts, inject retrieval on every message, run
-embeddings, or migrate existing journals. Results are reference data and never
+It does not automatically save new facts, inject retrieval on every message,
+run embeddings, or move the original journals. The authenticated private search
+path does refresh its managed diary cache before searching. Results are reference data and never
 authorize actions. There is no separate read tool.
 
 ## Storage and visibility
@@ -35,7 +37,8 @@ visitors permission to search. Unclassified root files are excluded. Scope is
 derived from a bridge-issued per-turn capability, never from model arguments.
 Old mixed journals outside this directory stay outside retrieval; do not copy
 them into `shared`. Prepare reviewed memory files separately. The tool is
-read-only and does not create the directory.
+search itself is read-only; the private pre-search synchronizer creates and
+updates its reserved managed-copy directory, never original records.
 
 Directory and file opens use retained directory descriptors with `O_NOFOLLOW`;
 symbolic links (including scoped directories and the memory root), hardlinked
@@ -150,3 +153,41 @@ stay in the existing our-story/development-logs layout, with OUR_STORY as index.
 No live model run is required just to save rules; the existing timer need not be
 restarted to pick up the file on its next run. Local rules, organizer, tests and
 private records remain excluded from the public repository.
+
+## Current diary copies on demand
+
+`ToolServer.call(memory_search)` uses `diary_sync.search_with_diaries`. The query
+is validated first. Only a bound owner private chat synchronizes sources; group
+queries go directly to their allowed memory scope without reading private
+sources or running the synchronizer. Visitors still have no grant.
+
+The trusted source whitelist is workspace/OUR_STORY.md and dated Markdown files
+in our-story/YYYY-MM/ and development-logs/YYYY-MM/. It does not include OWNER,
+SOUL, credentials, arbitrary files or tasks. The model cannot choose paths. The
+synchronizer copies into memory/private/diary-current with the same relative
+layout; the search then reads only memory as before. This boundary separates
+the trusted source copier from the query engine.
+
+New/changed text is copied atomically per file, using content comparison rather
+than mtime alone. Unchanged copies are not rewritten. Removed source records
+remove only their managed copies, not hand-written private memory or original
+records. This is cache cleanup, not a general forgetting/delete feature. Old
+existing-records-<date>-<time>-<microseconds> snapshots remain on disk but are
+excluded from private service searches after a successful sync, so an old
+snapshot cannot resurrect an outdated statement. Other manual notes remain
+searchable. There is no background polling or instantaneous replication; a
+record saved before the next private lookup is refreshed at lookup time.
+
+The copier opens directories/files relative to retained descriptors with
+NOFOLLOW, rejects hardlinks/special or invalid text files, and reads all sources
+before changing copies. Limits: 128 source records, 256 KiB each, 4 MiB total,
+2048 directory entries. Copies and source scanning share the existing local
+nightly.lock; a busy organizer returns a retryable tool error rather than
+blocking the conversation. Unsafe/incomplete input or copy failure also stops
+the lookup: it does not silently answer from stale cache. Per-file replacement
+is atomic, not a multi-file transaction; failed attempts converge on retry.
+
+This phase does not change diary writing rules, generate topics, synchronize
+private records into groups, or automatically start the nightly model. Changes
+that occur after a record has been read are picked up by a later query. The
+existing memory.enabled switch disables the whole service path.

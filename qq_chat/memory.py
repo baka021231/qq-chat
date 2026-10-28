@@ -2,6 +2,7 @@
 import os
 from itertools import islice
 import stat
+import re
 import unicodedata
 
 MAX_FILES = 256
@@ -17,20 +18,25 @@ def normalized(text):
     return unicodedata.normalize('NFKC', text).casefold()
 
 
-def search(root, query, *, group_id=None):
-    """Return excerpts, never executable instructions or caller-selected paths.
-
-    None means an already authenticated owner private chat; a group ID permits
-    shared/ and groups/<id>/ only. Root-level files are intentionally invisible.
-    No symlinks (including the root), hardlinks, devices or pipes are read.
-    """
+def validate_query(query):
     if not isinstance(query, str) or not 1 <= len(query.strip()) <= 200:
         raise ValueError('检索词应为 1～200 字')
-    if group_id is not None and (type(group_id) is not int or group_id <= 0):
-        raise ValueError('无效的群记忆范围')
     terms = list(dict.fromkeys(normalized(query).split()))
     if len(terms) > 8:
         raise ValueError('最多使用 8 个检索词，以空格分隔')
+    return terms
+
+
+def search(root, query, *, group_id=None, exclude_private_snapshots=False):
+    """Return excerpts within a bridge-authenticated scope, never instructions.
+
+    None means an owner private chat. Group IDs permit shared/ and that group
+    only. The internal exclusion flag is used after current diaries are copied;
+    the original generated snapshots remain on disk but are not current facts.
+    """
+    terms = validate_query(query)
+    if group_id is not None and (type(group_id) is not int or group_id <= 0):
+        raise ValueError('无效的群记忆范围')
     scopes = [('shared',), ('private',)] if group_id is None else [('shared',), ('groups', str(group_id))]
     budget = {'entries': 0, 'files': 0, 'bytes': 0, 'partial': False}
     hits = []
@@ -47,6 +53,9 @@ def search(root, query, *, group_id=None):
                 budget['partial'] = True
                 return
             if name.startswith('.'):
+                continue
+            if (exclude_private_snapshots and prefix == 'private'
+                    and re.fullmatch(r'existing-records-\d{8}-\d{6}-\d{6}', name)):
                 continue
             try:
                 info = os.stat(name, dir_fd=fd, follow_symlinks=False)
