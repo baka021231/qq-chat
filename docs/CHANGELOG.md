@@ -2,6 +2,12 @@
 
 ## 2026-10-28
 
+### 新增 Agent 统一接口与隔离设计稿
+
+- 新增 docs/AGENT-INTERFACE.md：列出桥接按 agent 类型分支、适配器反向依赖桥接、人设生效时机不一致等现状，提出结构化请求、统一事件、能力声明与注册表的接口草案，以及五步迁移和安全约束。
+- 记录 Codex 已加载线程不采用新 developerInstructions，修改 SOUL.md/OWNER.md 后实际需 /new 才生效；FEATURES/ARCHITECTURE 中的相关描述按设计第 4 步修正。
+- 仅新增设计文档与索引，不修改程序、配置或运行行为，不需重启。
+
 ### 支持引用消息与合并转发的有限展开
 
 - 接收reply/forward，支持get_msg原文、get_forward_msg和内联转发节点；保留署名与顺序，提供有限嵌套展开。

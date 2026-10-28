@@ -28,6 +28,7 @@ NapCat OneBot 11 与本机 Agent 会话之间的桥接，支持 Codex、Claude C
 | `docs/BACKLOG.md` | 需求待办：目标、验收标准和待定事项 |
 | `docs/ROADMAP.md` | 远景小地图：语音、前后台协作与希望实现的体验 |
 | `docs/ARCHITECTURE.md` | 架构与开发说明：模块、权限模型、数据库、常见改动、测试写法 |
+| `docs/AGENT-INTERFACE.md` | Agent 统一接口与隔离设计（设计稿，尚未实现）：分层职责、接口草案、迁移步骤 |
 | `docs/APPSERVER-MIGRATION.md` | Codex 会话映射与终端接续 |
 | `docs/CHANGELOG.md` | 变更记录 |
 | `setup/` | NapCat 安装脚本 |
