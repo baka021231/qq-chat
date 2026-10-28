@@ -39,6 +39,8 @@ class TurnRequest:
     history_text: str | None = None
     on_runtime: Callable[[dict], None] | None = None
     on_activity: Callable[[dict], None] | None = None
+    # Trusted per-turn context, separate from thread configuration/history.
+    runtime_instructions: str = ''
 
 
 class Agent(ABC):

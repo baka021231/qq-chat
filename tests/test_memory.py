@@ -86,6 +86,27 @@ class SearchTests(unittest.TestCase):
         self.assertTrue(result['partial'])
         self.assertEqual(len(result['results']), 1)
 
+    def test_heading_cannot_hide_answer_and_keyword_context_is_returned(self):
+        self.write('private/answer.md', '## 私聊记忆验收暗号\n\n说明：用于测试。\n私聊记忆验收暗号：SYNTHETIC-ANSWER\n')
+        result = search(self.root, '私聊记忆验收暗号')
+        self.assertIn('SYNTHETIC-ANSWER', result['results'][0]['text'])
+        self.assertEqual(result['results'][0]['line'], 4)
+        self.write('private/context.md', '## 测试关键词\n\n答案另起一行\nVALUE-IN-CONTEXT\n')
+        self.assertIn('VALUE-IN-CONTEXT', search(self.root, '测试关键词')['results'][0]['text'])
+
+    def test_separated_answers_in_one_file_and_result_budget(self):
+        self.write('private/multi.md', ('关键词 answer-FIRST\n' + '无关内容\n' * 20
+                   + '关键词 answer-SECOND\n' + '无关内容\n' * 20
+                   + '关键词 answer-THIRD\n' + '无关内容\n' * 20 + '关键词 answer-FOURTH'))
+        result = search(self.root, '关键词')
+        combined = '\n'.join(r['text'] for r in result['results'])
+        self.assertIn('answer-FIRST', combined)
+        self.assertIn('answer-SECOND', combined)
+        self.assertEqual(len(result['results']), 3)
+        self.assertLessEqual(sum(len(r['text']) for r in result['results']), 2000)
+        self.assertTrue(all(len(r['text']) <= 500 for r in result['results']))
+
+
 
 # Reuse setup helpers rather than inheriting and silently re-running all tests.
 class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
@@ -140,9 +161,16 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result['results'][0]['file'], 'private/preference.md')
             self.assertIn('按需展开', result['results'][0]['text'])
             self.assertEqual(err, b'')
+            source, conversation, _ = server.grants[self.token(grant)]
+            server.grants[self.token(grant)] = (source, conversation, 0)
+            code, result, err = await run()
+            self.assertEqual(code, 1)
+            self.assertEqual(result['code'], 'grant_expired')
+            self.assertEqual(err, b'')
         code, result, err = await run()
         self.assertEqual(code, 1)
-        self.assertEqual(set(result), {'error'})
+        self.assertEqual(set(result), {'error', 'code'})
+        self.assertEqual(result['code'], 'grant_missing')
         self.assertEqual(err, b'')
 
     async def test_full_turn_has_only_memory_command_and_revokes_after_turn(self):
@@ -162,3 +190,40 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         self.cfg['memory'] = {'enabled': False}
         await self.bridge.chat(self.owner, '回忆一下')
         self.assertNotIn('memory_search.py', self.front.requests[-1].instructions)
+
+
+    async def test_consecutive_turns_use_fresh_grant_and_do_not_authorize_guest(self):
+        server = await self.setup_tools()
+        self.cfg['agents']['back'] = []
+        self.cfg['agents']['profiles']['front']['type'] = 'codex_app'
+        paths = []
+        for _ in range(2):
+            await self.bridge.chat(self.owner, '回忆一下')
+            req = self.front.requests[-1]
+            self.assertIn('替代历史中的命令和路径', req.runtime_instructions)
+            import shlex
+            command_line = next(line for line in req.runtime_instructions.splitlines() if ' --grant ' in line)
+            words = shlex.split(command_line)
+            path = words[words.index('--grant') + 1]
+            paths.append(path)
+            self.assertFalse(Path(path).exists())
+            self.assertFalse(server.grants)
+        self.assertNotEqual(paths[0], paths[1])
+        await self.bridge.chat(self.guest, '回忆一下')
+        self.assertNotIn(' --grant ', self.front.requests[-1].runtime_instructions)
+
+
+    async def test_cli_errors_distinguish_bad_config_from_unreachable_service(self):
+        command = [sys.executable, '-I', str(Path(__file__).parents[1] / 'tools/memory_search.py')]
+        path = self.root / 'bad-grant.json'
+        for content, expected in [('invalid-json', 'grant_invalid'),
+                (json.dumps({'mcpServers': {'qq': {'env': {'QQ_TOOL_SOCKET': str(self.root/'absent.sock'),
+                  'QQ_TOOL_TOKEN': 'synthetic-test-only'}}}}), 'service_unavailable')]:
+            path.write_text(content)
+            proc = await asyncio.create_subprocess_exec(*command, '--grant', str(path), '--query', 'test',
+                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            out, err = await asyncio.wait_for(proc.communicate(), 5)
+            self.assertEqual(proc.returncode, 1)
+            self.assertEqual(json.loads(out)['code'], expected)
+            self.assertNotIn(b'synthetic-test-only', out)
+            self.assertEqual(err, b'')

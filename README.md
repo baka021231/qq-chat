@@ -127,12 +127,12 @@ Claude 回复完整校验后才按气泡发出，因此没有即时首字；Code
 
 ## 记忆检索
 
-已有只读 `memory_search`，直接返回关键词匹配的片段、相对文件名和行号。
+已有只读 `memory_search`，返回关键词命中与附近上下文、相对文件名和命中行号；同一文件可返回多个片段，仍受总长度限制。
 只查 `workspace/memory/`：主人私聊可读 shared/private，群内主人可读
 shared/当前群目录；访客不取得检索授权。记忆文件属于本地私人数据，不提交仓库。
 
 FULL 单 agent 每轮由桥接提供带限时授权的命令入口；Claude FRONT 使用
-qq MCP。Codex 原生 MCP 配置不变。单 agent Codex 只查记忆时默认静默，
+qq MCP。Codex 在开始每轮工作前单独注入当前授权命令，避免复用历史失效路径；原生 MCP 配置不变。单 agent Codex 只查记忆时默认静默，
 开始执行非记忆工作后恢复进度；Claude/Grok 的输出分流未做同样改造。
 
 检索不会自动保存新事实或每轮自动调用；日记正式目录统一为 memory/private/diary，直接检索，群聊不读取私人日记。按主题维护“当前有效偏好/决定”

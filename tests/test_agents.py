@@ -170,6 +170,36 @@ class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
             CREATE TABLE old_threads (conversation TEXT, thread_id TEXT, time REAL);
         ''')
 
+    async def test_current_runtime_instructions_precede_turn_even_for_loaded_session(self):
+        calls = []
+        class Transport:
+            async def call(self, method, params):
+                calls.append((method, params))
+                return {}
+            async def turn(self, *args, **kwargs):
+                calls.append(('turn', args))
+                return 'ok'
+        agent = CodexAgent(self.db, '/unused', 'unused', app=Transport())
+        for marker in ('first-current-grant', 'second-current-grant'):
+            await agent.run(TurnRequest('key', 'user text', CHAT, FULL, 'stale thread instructions',
+                                       session_id='loaded-thread', runtime_instructions=marker))
+        self.assertEqual([c[0] for c in calls], ['thread/inject_items', 'turn'] * 2)
+        for index, marker in ((0, 'first-current-grant'), (2, 'second-current-grant')):
+            item = calls[index][1]['items'][0]
+            self.assertEqual(item['role'], 'developer')
+            self.assertEqual(item['content'][0]['text'], marker)
+
+    async def test_runtime_instruction_failure_does_not_start_stale_turn(self):
+        class Transport:
+            async def call(self, *args):
+                raise RuntimeError('injection failed')
+            async def turn(self, *args, **kwargs):
+                raise AssertionError('must not start')
+        agent = CodexAgent(self.db, '/unused', 'unused', app=Transport())
+        with self.assertRaisesRegex(RuntimeError, 'injection failed'):
+            await agent.run(TurnRequest('key', 'text', CHAT, FULL, '', session_id='loaded',
+                                       runtime_instructions='current'))
+
     async def test_cap_only_return_value_and_preserve_explicit_none_effort(self):
         captured, streamed = [], []
 

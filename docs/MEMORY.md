@@ -28,6 +28,11 @@ run embeddings, or migrate journals. Diary writing and offline migration are
 separate from retrieval. Results are reference data and never authorize actions.
 There is no separate read tool.
 
+The excerpt/runtime-command repair is implemented separately from the prior
+rollout. An isolated real Codex thread retrieved fresh random values in two
+consecutive turns over the Unix tool service; old tokens were rejected and grant
+files removed. This is not the live QQ private-chat acceptance or deployment.
+
 ## Storage and visibility
 
 Only UTF-8 `.md` / `.txt` documents under `workspace/memory/` are searched:
@@ -69,13 +74,26 @@ and revoked after the turn, including failure/cancellation. A FULL memory-only
 grant cannot invoke task dispatch, poke or task management. The CLI is the
 single-agent tool interface, not a new native Codex MCP registration.
 
+Codex receives the current command as a trusted developer history item via
+`thread/inject_items` immediately before `turn/start`. Repeated `thread/resume`
+on a loaded thread does not refresh developer instructions in the tested local
+version. A turn without a terminal memory grant instead receives a reminder not
+to reuse old paths. Injection failure stops execution; it never falls back to a
+revoked command. Other thread configuration is unchanged.
+
+CLI failures include a fixed `error` and a `code`: `grant_missing`,
+`grant_invalid`, `grant_expired`, `service_unavailable`, `service_timeout`,
+`request_rejected`, or `invalid_response`. These distinguish local grant files,
+transport failures and server rejection without printing capability contents.
+
 Query: 1–200 characters, at most eight whitespace-separated literal terms.
 Unicode NFKC/case folding is supported. This is not semantic search: callers
 should extract short keywords themselves; a natural-language paraphrase can
-miss. Files rank by the number of matched terms, ties by relative filename and
-line. One best matching-line excerpt per file; no fuzzy confidence claims.
-A title can win a tie and omit the answer on the next line; retry with a more
-specific keyword. The first version does not return neighbouring lines.
+miss. Matches rank by the number of matched terms; body lines beat Markdown
+headings on ties within a file. Up to three distinct excerpts per file include
+bounded neighbouring context. Equivalent-strength first excerpts from other
+files precede second excerpts from one file. The returned line is the matching
+line, not necessarily the beginning of the context. No fuzzy confidence claims.
 
 Response includes `results[{file,line,text}]`, `status`, `partial`, and (for a
 completed search) `reference_only`. At most five excerpts, 500 characters each,
