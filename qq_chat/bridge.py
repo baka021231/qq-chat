@@ -193,7 +193,10 @@ class Bridge(TaskCommands):
     def agent_for(self, source):
         config = self.cfg.get('agents', {})
         front = config.get('front', 'codex')
-        name = front if owner_request(source, self.cfg['owner_qq']) else config.get('guest', front)
+        guest = config.get('guest', front)
+        if source.kind == 'group':
+            guest = config.get('group_guest', guest)
+        name = front if owner_request(source, self.cfg['owner_qq']) else guest
         return self.agents[name]
 
     @property
@@ -838,7 +841,9 @@ class Bridge(TaskCommands):
             self.ws = None
 
     async def run(self):
-        for name in dict.fromkeys((*settings(self.cfg)[:2], *self.cfg.get('agents', {}).get('back', []))):
+        front, guest, _ = settings(self.cfg)
+        config = self.cfg.get('agents', {})
+        for name in dict.fromkeys((front, guest, config.get('group_guest', guest), *config.get('back', []))):
             await self.agents[name].start()
         await self.tasks.recover_after_restart()
         if (self.cfg.get('agents', {}).get('back')

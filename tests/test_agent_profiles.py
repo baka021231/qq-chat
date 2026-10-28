@@ -139,6 +139,23 @@ class ProfileBridgeTests(unittest.IsolatedAsyncioTestCase):
             worker.cancel()
             with contextlib.suppress(asyncio.CancelledError): await worker
 
+    async def test_group_override_does_not_change_owner_private_guest_or_permissions(self):
+        codex=FakeAgent();codex.name='codex';codex.profile=self.cfg['agents']['profiles']['codex']
+        self.bridge.agents['codex']=codex
+        self.cfg['agents']['group_guest']='codex'
+        (self.root/'workspace/OWNER.md').write_text('owner-private-canary')
+        await self.bridge.chat(Source('group',20001,30001),'group guest')
+        self.assertEqual(codex.requests[-1].level,'none')
+        self.assertNotIn('owner-private-canary',codex.requests[-1].instructions)
+        self.assertIsNone(codex.requests[-1].grant)
+        await self.bridge.chat(Source('private',30001,30001),'private guest')
+        self.assertEqual(self.guest.requests[-1].model,'haiku')
+        await self.bridge.chat(Source('group',20001,10001),'group owner')
+        self.assertIn('owner-private-canary',self.front.requests[-1].instructions)
+        self.assertEqual(self.front.requests[-1].level,'full')
+        self.assertEqual(self.front.requests[-1].model,'sonnet')
+        self.assertEqual(len(codex.requests),1)
+
     async def test_owner_and_guests_use_different_profiles_and_defaults(self):
         await self.bridge.chat(self.owner, 'hello')
         await self.bridge.chat(Source('private', 30001, 30001), 'hello')
@@ -207,3 +224,16 @@ class ProfileBridgeTests(unittest.IsolatedAsyncioTestCase):
         await self.dispatch(self.owner, 'hello')
         saved = self.bridge.db.execute("SELECT content FROM history WHERE role='assistant'").fetchone()[0]
         self.assertEqual(saved, '第一句\n\n最后一句')
+
+
+class GroupGuestValidationTests(unittest.TestCase):
+    def test_unknown_group_profile_is_rejected(self):
+        for value in ('missing', None, [], 1):
+            cfg=configuration();cfg['agents']['group_guest']=value
+            with self.subTest(value=value), self.assertRaises(ValueError):settings(cfg)
+
+    def test_defined_group_profile_keeps_private_guest_and_owner_defaults(self):
+        cfg=configuration();cfg['agents']['group_guest']='codex'
+        front, guest, profiles=settings(cfg)
+        self.assertEqual((front,guest),('claude','guest'))
+        self.assertEqual(profiles['codex']['type'],'codex_app')
