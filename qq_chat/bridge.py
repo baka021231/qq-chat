@@ -171,6 +171,9 @@ class Bridge(TaskCommands):
         self.db.execute("CREATE TABLE IF NOT EXISTS old_threads (conversation TEXT, thread_id TEXT, time REAL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS group_context (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER, content TEXT)")
         self.db.execute("CREATE INDEX IF NOT EXISTS group_context_group ON group_context(group_id, id)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS group_context_cursors ("
+                        "conversation TEXT NOT NULL, profile TEXT NOT NULL, session_id TEXT NOT NULL, "
+                        "last_id INTEGER NOT NULL, PRIMARY KEY(conversation,profile,session_id))")
         self.db.commit()
         _, _, profiles = settings(cfg)
         self._agent_state = AgentState(self.db, legacy_codex_profile(cfg),
@@ -215,11 +218,16 @@ class Bridge(TaskCommands):
         self.db.commit()
         return context_id
 
-    def group_reference(self, source, context_id):
+    def group_reference(self, source, context_id, thread=None):
         if source.kind != 'group' or context_id is None:
             return ''
-        rows = self.db.execute("SELECT content FROM group_context WHERE group_id=? AND id<? "
-                               "ORDER BY id DESC LIMIT 40", (source.target, context_id)).fetchall()
+        agent = self.agent_for(source)
+        thread = thread or agent.session_id(self.conversation(source)) or ''
+        last_id = self.db.execute("SELECT COALESCE(MAX(last_id),0) FROM group_context_cursors "
+                                  "WHERE conversation=? AND profile=? AND session_id IN (?, '')",
+                                  (self.conversation(source), agent.name, thread)).fetchone()[0]
+        rows = self.db.execute("SELECT content FROM group_context WHERE group_id=? AND id>? AND id<? "
+                               "ORDER BY id DESC LIMIT 40", (source.target, last_id, context_id)).fetchall()
         messages, size = [], 0
         for (content,) in rows:
             if size + len(content) > 12000:
@@ -229,6 +237,24 @@ class Bridge(TaskCommands):
         if not messages:
             return ''
         return prompts.group_context(list(reversed(messages)))
+
+    def advance_group_context(self, source, thread, context_id):
+        if source.kind != 'group' or context_id is None:
+            return
+        self.db.execute("INSERT INTO group_context_cursors VALUES (?,?,?,?) "
+                        "ON CONFLICT(conversation,profile,session_id) DO UPDATE "
+                        "SET last_id=MAX(last_id,excluded.last_id)",
+                        (self.conversation(source), self.agent_for(source).name, thread, context_id))
+
+    def reset_group_context(self, source, context_id=None):
+        if source.kind != 'group':
+            return
+        key, profile = self.conversation(source), self.agent_for(source).name
+        latest = context_id if context_id is not None else self.db.execute(
+            "SELECT COALESCE(MAX(id),0) FROM group_context WHERE group_id=?", (source.target,)).fetchone()[0]
+        self.db.execute("DELETE FROM group_context_cursors WHERE conversation=? AND profile=?", (key, profile))
+        # An empty session ID is a floor for future sessions after explicit /new.
+        self.db.execute("INSERT INTO group_context_cursors VALUES (?,?,?,?)", (key, profile, '', latest))
 
     async def send(self, source, text):
         # One limiter for progress, answers and commands, including long chunks.
@@ -459,12 +485,12 @@ class Bridge(TaskCommands):
         await self.send(source, '当前会话已选择 ' + name + '，下一条消息使用该模型，聊天上下文保留。' + notice)
 
     def turn_text(self, source, thread, text, context_id):
-        """Prefix old-bridge history (until the thread is bootstrapped) and recent group context."""
+        """Prefix old-bridge history (until the thread is bootstrapped) and unseen group context."""
         if not self.db.execute("SELECT 1 FROM bootstrap WHERE thread_id=?", (thread,)).fetchone():
             history = recent_history(self.db, self.conversation(source))
             if history:
                 text = prompts.history_import(history, text)
-        return self.group_reference(source, context_id) + text
+        return self.group_reference(source, context_id, thread) + text
 
     async def relay_progress(self, source, queue):
         while True:
@@ -595,6 +621,7 @@ class Bridge(TaskCommands):
                 await agent.reset(key)
                 self.db.commit()
         self.db.execute("INSERT OR IGNORE INTO bootstrap VALUES (?)", (thread,))
+        self.advance_group_context(source, thread, context_id)
         self.db.commit()
         if authorized and request.history_text is not None:
             self._history_replies[key] = request.history_text
@@ -683,6 +710,7 @@ class Bridge(TaskCommands):
                 elif text == "/new":
                     await self.agent_for(source).reset(self.conversation(source))
                     self.db.execute("DELETE FROM history WHERE conversation=?", (self.conversation(source),))
+                    self.reset_group_context(source, incoming.context_id)
                     self.db.commit()
                     count = len(self.tasks.list(self.conversation(source), live=True)) if hasattr(self, 'tasks') else 0
                     notice = f'仍有 {count} 个后台任务未结算，结果会回到新会话。' if count else ''
