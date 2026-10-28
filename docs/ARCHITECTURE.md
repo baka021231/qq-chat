@@ -41,7 +41,8 @@ NapCat ◀──WebSocket── Bridge.send()  全局锁，间隔随机 2～3 �
 | `agents/claude.py` | Claude JSONL、NONE/FRONT/FULL 启动、工具列表检查、回复校验、进程清理 | `agents.base` |
 | `agents/config.py` | profile 引用、权限模式、模型目录及阶段范围校验 | 无 |
 | `agents/state.py` | 模型偏好迁移与隔离、历史导入预算 | 无 |
-| `tool_server.py` | 每轮授权、Unix socket、工具 schema/执行、范围校验与真实回执 | `bridge`（运行时校验）、`memory` |
+| `tool_server.py` | 每轮授权、Unix socket、工具 schema/执行、范围校验与真实回执 | `bridge`（运行时校验）、`diary_sync` |
+| `diary_sync.py` | 按固定源白名单刷新私人日记托管副本，共享整理锁，失败阻止旧缓存检索 | `memory`、标准库 |
 | `memory.py` | 在可信范围目录内做有预算的关键词检索，直接返回来源片段 | 标准库 |
 | `memory_progress.py` | 识别直接记忆查询，按真实 Codex 活动事件缓冲/释放进度 | 标准库 |
 | `front_tools.py` | 标准库 MCP stdio shim，经令牌转发工具调用 | 标准库 |
@@ -217,11 +218,11 @@ Grok 续接时会缓存首次系统规则，单纯更换 --agent 文件未能刷
 
 ## 手动记忆与会话上下文的边界
 
-- `history` 与 `group_context` 是聊天续接/参考；`memory` 是独立本地文件，两者不自动同步。
+- `history` 与 `group_context` 是聊天续接/参考；`memory` 是独立本地文件，聊天history不会自动变成记忆。主人私聊检索前会把固定的日记/日志文件复制刷新到私人托管区，再搜索memory。
 - `ToolServer.call` 按真实 Source 决定 root 下的 shared/private/当前群目录，模型只能传 query。memory-only 授权的 tools/list 也只含 memory_search，不能借它派单或拍一拍。
 - `tools/memory_search.py` 只读取本轮 grant 并请求 Unix 服务；token 不进入 argv、日志或返回值，轮次结束撤销并删除授权文件。FULL 仍保留其他文件工具，不能将此范围检查说成系统沙箱。
 - `memory.search` 以目录描述符逐层打开，NOFOLLOW 并排除硬链接/特殊文件；每文件返回最佳命中行中的最多500字窗口，最多5条、正文共2000字。关键词检索不等于语义检索，扫描预算与 partial 语义见 MEMORY.md。
 - Codex 主人单 agent 有 memory grant 时，Bridge.run_turn 安装 MemoryProgress；AppServer 在转发进度前传递真实 item 活动事件。纯记忆调用丢弃缓冲，其他或未知工具释放缓冲；最终回答、失败和停止不经过该过滤。
-- 现有每日日志、主题记忆维护、夜间整理不是自动写入模块。横向日期记录与纵向主题文件的更新、纠正/遗忘仍待设计和实施。旧日志复制进 memory 也只是快照。
+- 现有每日日志、主题记忆维护、夜间整理不是自动写入模块。横向日期记录与纵向主题文件的更新、纠正/遗忘仍待设计和实施。旧 existing-records 仍是历史快照；当前日记由 diary_sync 按需刷新，详情见 MEMORY.md。
 
 当前检索协议与验收边界以 [MEMORY.md](MEMORY.md) 为准，代码变更历史看 CHANGELOG。

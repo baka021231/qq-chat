@@ -11,6 +11,7 @@ NapCat OneBot 11 与本机 Agent 会话之间的桥接，支持 Codex、Claude C
 | `qq_chat/codex_app.py` | Codex App Server 客户端 |
 | `qq_chat/agents/` | Codex/Claude/Grok 适配器、profile 校验和状态迁移 |
 | `qq_chat/prompts.py` | 发给模型的提示词（权限指令、历史与群聊上下文、附件和图片说明） |
+| `qq_chat/diary_sync.py` | 主人私聊查询前刷新固定日记的私人托管副本 |
 | `qq_chat/memory.py`、`qq_chat/memory_progress.py` | 有范围限制的关键词检索、Codex 纯记忆查询静默进度 |
 | `tools/memory_search.py` | 主人单 agent 经本轮授权调用记忆工具的命令入口 |
 | `qq_chat/reply.py` | QQ 回复分段与流式发送 |
@@ -130,9 +131,9 @@ FULL 单 agent 每轮由桥接提供带限时授权的命令入口；Claude FRON
 qq MCP。Codex 原生 MCP 配置不变。单 agent Codex 只查记忆时默认静默，
 开始执行非记忆工作后恢复进度；Claude/Grok 的输出分流未做同样改造。
 
-检索不会自动保存事实、同步旧日记或每轮自动调用；按主题维护“当前有效偏好/决定”
+检索不会自动保存新事实或每轮自动调用；主人私聊查询前会刷新固定日记副本，群聊不读取私人源。按主题维护“当前有效偏好/决定”
 仍是后续设计。`/new` 清当前聊天上下文和 history，不删除 memory 文件。
-手工复制的旧记录只是快照。工具权限不是 FULL 文件工具的操作系统沙箱。
+手工复制的旧记录作为历史快照保留，不再混入私聊检索；当前副本按查询刷新，原记录不动。工具权限不是 FULL 文件工具的操作系统沙箱。
 详见 [记忆检索说明](docs/MEMORY.md)。
 
 ## 常用操作
