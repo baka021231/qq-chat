@@ -1,6 +1,6 @@
 # QQ 聊天桥接
 
-NapCat OneBot 11 与本机 Codex 会话之间的桥接。
+NapCat OneBot 11 与本机 Agent 会话之间的桥接，支持 Codex、Claude Code 和主人单 agent Grok。
 
 ## 目录
 
@@ -9,8 +9,10 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 | `qq_chat/` | 桥接程序包，用 `python3 -m qq_chat` 启动 |
 | `qq_chat/bridge.py` | 消息接收、权限、会话与回复调度 |
 | `qq_chat/codex_app.py` | Codex App Server 客户端 |
-| `qq_chat/agents/` | Codex/Claude 适配器、profile 校验和状态迁移 |
+| `qq_chat/agents/` | Codex/Claude/Grok 适配器、profile 校验和状态迁移 |
 | `qq_chat/prompts.py` | 发给模型的提示词（权限指令、历史与群聊上下文、附件和图片说明） |
+| `qq_chat/memory.py`、`qq_chat/memory_progress.py` | 有范围限制的关键词检索、Codex 纯记忆查询静默进度 |
+| `tools/memory_search.py` | 主人单 agent 经本轮授权调用记忆工具的命令入口 |
 | `qq_chat/reply.py` | QQ 回复分段与流式发送 |
 | `qq_chat/voice.py` | 独立语音队列、合成进程协议和音频校验 |
 | `tools/voice_backend.py` | 隔离 Python 环境中的常驻 ONNX 合成适配器 |
@@ -19,6 +21,8 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 | `tests/` | 离线回归测试 |
 | `tools/` | 当前可用的连接检查、重启工具 |
 | `docs/FEATURES.md` | 功能说明：能做什么、限制、不支持的功能、已知问题 |
+| `docs/MEMORY.md` | 手动记忆检索：目录范围、授权、结果限制与验收边界 |
+| `docs/FRONT-BACK.md` | 分阶段设计和历史实测记录；当前实现看 FEATURES/ARCHITECTURE |
 | `docs/VOICE.md` | 本地角色语音安装、解耦接口、实测与启用方法 |
 | `docs/BACKLOG.md` | 需求待办：目标、验收标准和待定事项 |
 | `docs/ROADMAP.md` | 远景小地图：语音、前后台协作与希望实现的体验 |
@@ -52,7 +56,8 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 | `allowed_groups` | `allow_all_groups` 为 `false` 时才生效的群号白名单 |
 | `mention_qq` | 群聊回复这些 QQ 号的消息时自动 @ 对方 |
 | `group_user_blacklist` | 群聊用户 QQ 号列表，默认空；跨群静默忽略，动态拉黑会保存，主人豁免。主人用 `/blacklist` 查看、`/block QQ号` 添加、`/unblock QQ号` 解除 |
-| `show_tool_progress` | 进度中是否推送工具调用摘要，默认 `false` |
+| `show_tool_progress` | 是否推送普通工具调用摘要，默认 false；已识别的纯记忆命令摘要不显示 |
+| `memory.enabled` | 手动记忆检索开关，默认 true；false 禁止查询并不为 FULL 轮次发放记忆授权，详见 docs/MEMORY.md |
 | `voice` | 可选本地语音回复，默认关闭；启用后正常回复先发文字，再补对应语音。配置见 `docs/VOICE.md` |
 | `agents` | 可选 profile 配置；省略保持 Codex；back 可空或指定一个后台；Codex profile 省略 path 时继承 codex_path |
 
@@ -91,7 +96,7 @@ NapCat OneBot 11 与本机 Codex 会话之间的桥接。
 
 Claude 回复完整校验后才按气泡发出，因此没有即时首字；Codex 流式保留。`/models` 对 Claude 读取配置目录，model 项也可用对象形式声明 `defaultReasoningEffort` 和 `supportedReasoningEfforts`；未声明档位时 `/effort` 不允许切换，不从 CLI 通用列表推断模型支持情况。新 profile 不继承其他 profile 的模型名。更多边界见 `docs/FRONT-BACK.md` 和 `docs/ARCHITECTURE.md`。
 
-### 手动前后台分离（PR3）
+### 前后台分离配置（含 PR3 手动入口）
 
 在已有 profiles 中选择一个后台，增加以下配置（示例将 `codex` 作为后台；保留自己的 front/guest 选择）：
 
@@ -111,9 +116,24 @@ Claude 回复完整校验后才按气泡发出，因此没有即时首字；Code
 }
 ```
 
-配置与顶层 codex_path 等原配置合并；没有 agents 或 back 为空时维持单 agent 行为。PR3 只开放一个后台 profile，主人前台只聊天，干活请发 `/task 完整目标`；后台看不到聊天记录，需要把要求写全。用 `/tasks` 查看当前会话任务、`/stop` 停前台、`/stop 编号` 或 `/stop all` 停后台。群任务可设置 tasks.progress=silent。
+配置与顶层 codex_path 等原配置合并；没有 agents 或 back 为空时维持单 agent 行为。当前只开放一个后台 profile；Claude 工具前台可通过 MCP 派发，Codex 前台仍使用 `/task 完整目标` 手动入口。后台看不到聊天记录，需要把要求写全。用 `/tasks` 查看当前会话任务、`/stop` 停前台、`/stop 编号` 或 `/stop all` 停后台。群任务可设置 tasks.progress=silent。
 
 重启后未开始的任务记为 interrupted，运行过的记为 orphaned 并通知；写 orphaned 持续占锁。自行确认旧执行确实结束后，在原会话用 `/task release 编号` 释放。不自动探测旧进程，不根据重启本身认定已停止。报告位于 workspace/tasks/编号.md，QQ 断线后可补发。
+
+## 记忆检索
+
+已有只读 `memory_search`，直接返回关键词匹配的片段、相对文件名和行号。
+只查 `workspace/memory/`：主人私聊可读 shared/private，群内主人可读
+shared/当前群目录；访客不取得检索授权。记忆文件属于本地私人数据，不提交仓库。
+
+FULL 单 agent 每轮由桥接提供带限时授权的命令入口；Claude FRONT 使用
+qq MCP。Codex 原生 MCP 配置不变。单 agent Codex 只查记忆时默认静默，
+开始执行非记忆工作后恢复进度；Claude/Grok 的输出分流未做同样改造。
+
+检索不会自动保存事实、同步旧日记或每轮自动调用；按主题维护“当前有效偏好/决定”
+仍是后续设计。`/new` 清当前聊天上下文和 history，不删除 memory 文件。
+手工复制的旧记录只是快照。工具权限不是 FULL 文件工具的操作系统沙箱。
+详见 [记忆检索说明](docs/MEMORY.md)。
 
 ## 常用操作
 
@@ -179,7 +199,7 @@ python3 tools/restart_bridge.py
 
 完整示例见 `config.front-back.example.json`：主人前台 `claude_front` 使用 sonnet，访客 `claude_guest` 使用 haiku，后台 codex。合并现有私密配置并校验，主人确认部署后才重启；不要把示例的占位参数当真实登录信息。
 
-分离模式下 Claude 主人前台只能经 MCP 查询、派发、停止、追加要求与拍一拍当前主人；任务真实建立后桥接直接发编号回执。访客无工具。`/task` 手动入口保留，Codex 前台仍用手动入口。`/task check 编号` 只读查询一次、不自动放锁；确认结束后 `/task release 编号`。FRONT 本机隔离证据和启动耗时调查见设计第 14 节，两个性能实验开关未写入配置。
+分离模式下 Claude 主人前台经 MCP 使用七个工具：派发、任务列表、状态、停止、追加要求、拍一拍当前主人，以及有范围限制的记忆检索；任务真实建立后桥接直接发编号回执。访客无工具。`/task` 手动入口保留，Codex 前台仍用手动入口。`/task check 编号` 只读查询一次、不自动放锁；确认结束后 `/task release 编号`。FRONT 本机隔离证据和启动耗时调查见设计第 14 节，两个性能实验开关未写入配置。
 
 ### Grok 主人单 agent
 
