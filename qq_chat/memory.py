@@ -12,6 +12,8 @@ MAX_ENTRIES = 2048
 MAX_DEPTH = 8
 MAX_RESULTS = 5
 MAX_TEXT = 2000
+MAX_FILE_RESULTS = 3
+MAX_EXCERPT = 500
 
 
 def normalized(text):
@@ -88,30 +90,47 @@ def search(root, query, *, group_id=None, exclude_private_snapshots=False):
                     if '\x00' in text:
                         budget['partial'] = True
                         continue
-                    # One excerpt per file, centred on its best matching line;
-                    # never return entire long documents.
+                    # Keep a few distinct matches, with nearby context. A title
+                    # must not consume the only slot for a file's actual answer.
                     lines = text.splitlines()
                     candidates = []
                     for number, line in enumerate(lines):
                         value = normalized(line)
                         score = sum(term in value for term in terms)
                         if score:
-                            candidates.append((score, number))
-                    if candidates:
-                        score, number = max(candidates, key=lambda item: (item[0], -item[1]))
+                            heading = bool(re.match(r'^\s{0,3}#{1,6}\s', line))
+                            candidates.append((score, heading, number))
+                    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+                    selected = []
+                    for score, heading, number in candidates:
+                        if any(start <= number <= end for start, end in selected):
+                            continue
                         line = lines[number]
-                        # Keep the matching portion even on a very long line.
                         folded = normalized(line)
                         position = min(folded.find(t) for t in terms if t in folded)
                         start = max(0, position - 100)
-                        # NFKC may change offsets; for such lines return the
-                        # normalized excerpt explicitly instead of wrong offsets.
                         shown = folded if len(folded) != len(line) else line
-                        excerpt = shown[start:start + 500]
+                        focus = shown[start:start + 300]
+                        first, last = max(0, number - 2), min(len(lines) - 1, number + 3)
+                        preceding = '\n'.join(lines[first:number])[-100:]
+                        following = '\n'.join(lines[number + 1:last + 1])
+                        excerpt = (preceding + '\n' if preceding else '') + focus
+                        if following:
+                            excerpt += '\n' + following[:max(0, MAX_EXCERPT - len(excerpt) - 1)]
+                        # Only suppress nearby matches whose actual line was
+                        # included, rather than assuming truncated context fits.
+                        selected.append((number, number))
+                        for other in range(first, last + 1):
+                            if lines[other] and lines[other] in excerpt:
+                                selected.append((other, other))
+                        rank = sum(1 for h in hits if h['file'] == prefix + '/' + name)
                         hits.append({'file': prefix + '/' + name, 'line': number + 1,
-                                     'text': excerpt, '_score': score})
-                        hits.sort(key=lambda h: (-h['_score'], h['file'], h['line']))
-                        del hits[MAX_RESULTS:]
+                                     'text': excerpt, '_score': score, '_rank': rank,
+                                     '_heading': heading})
+                        if rank + 1 >= MAX_FILE_RESULTS:
+                            break
+                    hits.sort(key=lambda h: (-h['_score'], h['_rank'], h['_heading'], h['file'], h['line']))
+                    del hits[MAX_RESULTS:]
             except (OSError, UnicodeError):
                 budget['partial'] = True
 
@@ -141,6 +160,8 @@ def search(root, query, *, group_id=None, exclude_private_snapshots=False):
     remaining = MAX_TEXT
     for hit in hits:
         hit.pop('_score')
+        hit.pop('_rank')
+        hit.pop('_heading')
         hit['text'] = hit['text'][:remaining]
         remaining -= len(hit['text'])
     hits = [hit for hit in hits if hit['text']]

@@ -220,9 +220,15 @@ Grok 续接时会缓存首次系统规则，单纯更换 --agent 文件未能刷
 
 - `history` 与 `group_context` 是聊天续接/参考；`memory` 是独立本地文件，聊天history不会自动变成记忆。日记和详细日志直接写入 memory/private/diary，查询直接搜索 memory，不复制或刷新副本。
 - `ToolServer.call` 按真实 Source 决定 root 下的 shared/private/当前群目录，模型只能传 query。memory-only 授权的 tools/list 也只含 memory_search，不能借它派单或拍一拍。
-- `tools/memory_search.py` 只读取本轮 grant 并请求 Unix 服务；token 不进入 argv、日志或返回值，轮次结束撤销并删除授权文件。FULL 仍保留其他文件工具，不能将此范围检查说成系统沙箱。
-- `memory.search` 以目录描述符逐层打开，NOFOLLOW 并排除硬链接/特殊文件；每文件返回最佳命中行中的最多500字窗口，最多5条、正文共2000字。关键词检索不等于语义检索，扫描预算与 partial 语义见 MEMORY.md。
+- `tools/memory_search.py` 只读取本轮 grant 并请求 Unix 服务；token 不进入 argv、日志或返回值，轮次结束撤销并删除授权文件。Codex 在 turn/start 前用 thread/inject_items 注入当前轮记忆命令，避免已加载线程恢复时沿用旧授权路径；注入失败不开始该轮。FULL 仍保留其他文件工具，不能将此范围检查说成系统沙箱。
+- `memory.search` 以目录描述符逐层打开，NOFOLLOW 并排除硬链接/特殊文件；每文件最多3个不同片段，含有限相邻上下文，同分时正文优先于Markdown标题；最多5条、单条500字、正文共2000字。关键词检索不等于语义检索，扫描预算与 partial 语义见 MEMORY.md。
 - Codex 主人单 agent 有 memory grant 时，Bridge.run_turn 安装 MemoryProgress；AppServer 在转发进度前传递真实 item 活动事件。纯记忆调用丢弃缓冲，其他或未知工具释放缓冲；最终回答、失败和停止不经过该过滤。
 - 日期记录由主人会话按本地规则手动维护，现有夜间整理器只整理日记、详细日志和索引，不自动监听全部聊天或提取事实。主题更新规则已保存，但主题写入、纠正/遗忘流程尚未实现。本机已完成正式目录切换，旧原件及两类旧副本已按主人授权删除；服务保留旧副本排除逻辑，详情见 MEMORY.md。
 
 当前检索协议与验收边界以 [MEMORY.md](MEMORY.md) 为准，代码变更历史看 CHANGELOG。
+
+## 引用与合并转发
+
+`message_references.py`识别reply/forward数组段，在worker内用已有OneBot通道获取get_msg/get_forward_msg及有界内联/嵌套节点。Incoming新增references，事件接收与入队保留这些段，但不在WebSocket接收循环await获取，否则无法处理对应echo回执。普通群消息仍沿用触发规则；静默卡片只留占位，不主动展开。
+
+引用结果按当前来源校验get_msg范围，并以JSON参考区块置于真实speaker_message之前，署名不授予身份权限；参考图片沿用现有主人图片下载路径，群友仅文字，文件/语音/视频不下载。管理命令检查用当前直接文字，不看参考正文。节点、调用数、深度、文本与超时预算见FEATURES；日志不写引用正文。参考获取失败以提示进入当前轮，原文字请求仍可处理。

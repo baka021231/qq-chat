@@ -76,6 +76,13 @@ class CodexAgent(Agent):
 
     async def run(self, req: TurnRequest):
         thread = req.session_id if req.session_id is not None else await self.prepare(req)
+        if req.runtime_instructions:
+            # Resuming an already-loaded thread does not refresh its developer
+            # instructions. Append the current capability before starting work.
+            # Failure must stop the turn rather than reuse a revoked old path.
+            await self.app.call('thread/inject_items', {
+                'threadId': thread, 'items': [{'type': 'message', 'role': 'developer',
+                'content': [{'type': 'input_text', 'text': req.runtime_instructions}]}]})
         options = {'model': req.model, 'effort': req.effort} if req.model is not None else {}
         if req.on_runtime is not None:
             options['on_started'] = req.on_runtime
