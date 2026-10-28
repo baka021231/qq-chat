@@ -79,6 +79,8 @@ class CodexAgent(Agent):
         options = {'model': req.model, 'effort': req.effort} if req.model is not None else {}
         if req.on_runtime is not None:
             options['on_started'] = req.on_runtime
+        if req.on_activity is not None:
+            options['on_activity'] = req.on_activity
         reply = await self.app.turn(thread, req.text, on_progress=req.on_progress,
                                     on_answer=req.on_answer, show_tools=req.show_tools,
                                     image_paths=req.images, **options)

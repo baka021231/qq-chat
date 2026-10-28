@@ -100,7 +100,7 @@ class AppServer:
             for q in self.events.values():
                 q.put_nowait({'method': 'disconnected'})
 
-    async def turn(self, thread, text, on_progress=None, on_answer=None, show_tools=False, image_paths=(), model=None, effort=None, on_started=None):
+    async def turn(self, thread, text, on_progress=None, on_answer=None, show_tools=False, image_paths=(), model=None, effort=None, on_started=None, on_activity=None):
         q = asyncio.Queue()
         self.events[thread] = q
         turn_id = None
@@ -126,6 +126,8 @@ class AppServer:
                     method, params = event['method'], event.get('params', {})
                     if method == 'disconnected':
                         raise ExecutionUncertain('App Server disconnected during turn')
+                    if on_activity and method in ('item/started', 'item/completed'):
+                        on_activity(params.get('item', {}))
                     if on_progress:
                         progress = progress_text(method, params, show_tools=show_tools)
                         if progress:
@@ -227,6 +229,9 @@ def progress_text(method, params, show_tools=False):
     """Commentary and plans by default; tool details require explicit opt-in."""
     item = params.get('item', {})
     kind = item.get('type')
+    from .memory_progress import memory_item
+    if memory_item(item):
+        return None
     if method == 'item/completed' and kind == 'agentMessage' and item.get('phase') == 'commentary':
         return item.get('text', '').strip()[:1200]
     if method == 'turn/plan/updated':
