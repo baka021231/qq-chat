@@ -131,3 +131,22 @@ when/where to update those files have been implemented. Do not infer that the
 existing search tool automatically maintains either view. Explicit requests to
 remember, inferred preferences and verified completion require different
 evidence; the latest request must take precedence over an older default.
+
+## Daily rules and scheduled reflection (local arrangement)
+
+The owner's local OWNER.md contains the daily diary rule and is reloaded for
+each authorized owner turn; the full reflection rule is not included there.
+The separate local workspace/memory-rules/reflection.md is read explicitly by
+the existing nightly organizer when it runs (this installation uses 22:00
+Australia/Sydney). The rule is part of the organizer's prompt and checkpoint
+signature. Missing/empty rules fail without overwriting source records; a rule
+change during generation also prevents saving that output.
+
+The current organizer still produces only log/story outputs. It cannot create
+or update topic files. Rules for creating new topics, updating existing current
+conclusions and preserving diary evidence are written down for that later
+stage; their presence does not mean a topic writer is enabled. Daily records
+stay in the existing our-story/development-logs layout, with OUR_STORY as index.
+No live model run is required just to save rules; the existing timer need not be
+restarted to pick up the file on its next run. Local rules, organizer, tests and
+private records remain excluded from the public repository.
