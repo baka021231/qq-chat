@@ -275,3 +275,10 @@
 
 - 引入 git，推送到 GitHub。`.gitignore` 排除配置、聊天数据库、日志、`archive/` 和 `workspace/`。
 - 群聊自动 @ 的对象从硬编码 QQ 号改为配置项 `mention_qq`。
+
+
+## 日记统一直接存储（待合并与本地切换）
+
+- memory_search 直接搜索 memory；日记正式写入 memory/private/diary，不再查询前同步。
+- 新增离线迁移工具：默认检查、显式复制、保留原件、预检目标冲突；旧日记副本排除检索。
+- 本地 OWNER、反思规则与 nightly 路径切换包单独准备，不公开私人文件；主题写入仍未实现。

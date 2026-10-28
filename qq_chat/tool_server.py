@@ -148,9 +148,10 @@ class ToolServer:
         if name == 'memory_search':
             if not self.bridge.cfg.get('memory', {}).get('enabled', True):
                 raise ValueError('记忆检索已关闭')
-            from .diary_sync import search_with_diaries
-            return await asyncio.to_thread(search_with_diaries, self.root / 'workspace',
-                                          arguments['query'], group_id=source.target if source.kind == 'group' else None)
+            from .memory import search
+            return await asyncio.to_thread(search, self.root / 'workspace' / 'memory',
+                                          arguments['query'], group_id=source.target if source.kind == 'group' else None,
+                                          exclude_private_snapshots=True)
         logging.info('Front tool started name=%s source=%s', name, source.kind)
         tasks = self.bridge.tasks
         try:

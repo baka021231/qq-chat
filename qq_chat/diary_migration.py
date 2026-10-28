@@ -1,4 +1,4 @@
-"""Copy a fixed set of private diary sources before an owner private search.
+"""One-time migration of fixed private diary sources into memory.
 
 No source/destination paths or visibility settings come from model arguments.
 The original records and old snapshots are preserved. This is not a writer of
@@ -13,7 +13,7 @@ import re
 import stat
 import uuid
 
-from .memory import MAX_FILE_BYTES, MAX_BYTES, search, validate_query
+from .memory import MAX_FILE_BYTES, MAX_BYTES
 
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
@@ -43,7 +43,7 @@ def entries(fd, budget):
         names = [entry.name for entry in islice(iterator, max(0, MAX_ENTRIES - budget[0]) + 1)]
     budget[0] += len(names)
     if budget[0] > MAX_ENTRIES:
-        raise ValueError('日记目录超过同步扫描上限')
+        raise ValueError('日记目录超过迁移扫描上限')
     return sorted(names)
 
 
@@ -91,7 +91,7 @@ def read_record(fd, parts, *, limit=MAX_FILE_BYTES):
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 raise ValueError('日记必须是无链接的普通文件')
             if info.st_size > limit:
-                raise ValueError('日记超过单文件同步上限')
+                raise ValueError('日记超过单文件迁移上限')
             raw = stream.read(limit + 1)
             after = os.fstat(stream.fileno())
             if (len(raw) > limit or info.st_size != after.st_size
@@ -122,13 +122,13 @@ def replace_copy(fd, parts, raw):
                 pass
 
 
-def synchronize(workspace):
-    """Refresh private/diary-current under the same lock as the local organizer.
+def migrate(workspace, *, apply=False):
+    """Copy originals once, retaining old paths as frozen recovery material.
 
-    On failure the caller must not search stale copies as if sync succeeded.
-    Individual copies are atomic, not a cross-file transaction; retry converges.
-    Only managed copies of removed source records are deleted.
+    Hold the organizer lock. Refuse differing destinations before any writes;
+    retry after interruption is safe. No queries or group calls run migration.
     """
+    workspace = Path(workspace)
     root = os.open(workspace, DIR_FLAGS)
     try:
         with directory(root, '.automation', create=True) as area:
@@ -137,55 +137,54 @@ def synchronize(workspace):
             with os.fdopen(opened, 'r+b') as lock:
                 info = os.fstat(lock.fileno())
                 if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                    raise ValueError('日记同步锁不可用')
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    raise ValueError('日记正在整理，请稍后再查') from None
+                    raise ValueError('日记迁移锁不可用')
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 records = {}
                 size = 0
                 for parts in paths(root):
                     if len(records) >= MAX_RECORDS:
-                        raise ValueError('日记数量超过本阶段同步上限')
+                        raise ValueError('日记数量超过迁移上限')
                     raw = read_record(root, parts)
                     size += len(raw)
                     if size > MAX_BYTES:
-                        raise ValueError('日记总大小超过同步上限')
+                        raise ValueError('日记总大小超过迁移上限')
                     records[parts] = raw
-                # All source reads finish before changing any managed copy.
-                with directory(root, 'memory', create=True) as memory:
-                    with directory(memory, 'private', create=True) as private:
-                        with directory(private, 'diary-current', create=True) as current:
-                            old = set(paths(current))
-                            changed = 0
+                if not records:
+                    raise ValueError('没有找到可迁移日记，未更改任何记录')
+                if not apply:
+                    try:
+                        os.stat('memory', dir_fd=root, follow_symlinks=False)
+                    except FileNotFoundError:
+                        return {'files': len(records), 'new_files': len(records), 'applied': False}
+                # Dry-run never creates the destination. Read and validate all
+                # existing destination files before writing anything.
+                with directory(root, 'memory', create=apply) as memory:
+                    with directory(memory, 'private', create=apply) as private:
+                        try:
+                            current = os.open('diary', DIR_FLAGS, dir_fd=private)
+                        except FileNotFoundError:
+                            current = None
+                        missing = []
+                        try:
                             for parts, raw in records.items():
                                 try:
-                                    unchanged = read_record(current, parts) == raw
+                                    old = read_record(current, parts) if current is not None else None
                                 except FileNotFoundError:
-                                    unchanged = False
-                                if not unchanged:
+                                    old = None
+                                if old is None:
+                                    missing.append((parts, raw))
+                                elif old != raw:
+                                    raise ValueError('目标已有不同内容，保留双方记录，停止迁移')
+                        finally:
+                            if current is not None:
+                                os.close(current)
+                        if apply:
+                            with directory(private, 'diary', create=True) as current:
+                                for parts, raw in missing:
                                     replace_copy(current, parts, raw)
-                                    changed += 1
-                            removed = 0
-                            for parts in old - records.keys():
-                                with parent_for(current, parts) as parent:
-                                    os.unlink(parts[-1], dir_fd=parent)
-                                    os.fsync(parent)
-                                removed += 1
-                return {'status': 'ok', 'files': len(records), 'updated': changed, 'removed': removed}
-    except (OSError, UnicodeError) as error:
-        raise ValueError('日记同步失败，本次未使用旧副本回答') from error
+                                for parts, raw in records.items():
+                                    if read_record(current, parts) != raw:
+                                        raise ValueError('迁移校验失败，原件仍保留')
+                return {'files': len(records), 'new_files': len(missing), 'applied': apply}
     finally:
         os.close(root)
-
-
-def search_with_diaries(workspace, query, *, group_id=None):
-    validate_query(query)
-    workspace = Path(workspace)
-    # Group calls never inspect or copy private diary material, even with no hits.
-    if group_id is not None:
-        return search(workspace / 'memory', query, group_id=group_id)
-    synced = synchronize(workspace)
-    result = search(workspace / 'memory', query, exclude_private_snapshots=True)
-    result['diary_sync'] = synced
-    return result
