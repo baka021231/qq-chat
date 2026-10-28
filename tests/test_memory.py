@@ -148,9 +148,12 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_full_turn_has_only_memory_command_and_revokes_after_turn(self):
         server = await self.setup_tools()
         self.cfg['agents']['back'] = []
+        self.cfg['agents']['profiles']['front']['type'] = 'codex_app'
         await self.bridge.chat(self.owner, '回忆一下')
         req = self.front.requests[-1]
         self.assertIn('memory_search.py', req.instructions)
+        self.assertIn('查询记忆默认静默', req.instructions)
+        self.assertIsNotNone(req.on_activity)
         self.assertEqual(req.level, 'full')
         self.assertIsNone(req.grant)  # Does not change the FULL provider tool policy.
         self.assertFalse(server.grants)

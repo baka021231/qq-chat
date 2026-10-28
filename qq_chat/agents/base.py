@@ -38,6 +38,7 @@ class TurnRequest:
     show_tools: bool = False
     history_text: str | None = None
     on_runtime: Callable[[dict], None] | None = None
+    on_activity: Callable[[dict], None] | None = None
 
 
 class Agent(ABC):

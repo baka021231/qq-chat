@@ -86,3 +86,20 @@ normalization, source line numbers and result budgets. Existing provider policy
 and streaming tests must continue passing. These do **not** establish a real
 model's recall accuracy: QQ acceptance and new-model semantic recall are separate
 follow-up checks after approved deployment.
+
+## Quiet Codex lookup replies
+
+In single-agent owner Codex turns with a memory grant, commentary is buffered
+until the provider starts non-memory work. A direct bridge-issued memory_search
+command (or qq MCP memory_search event) discards the pending commentary; its
+tool-detail events are hidden even with show_tool_progress. Normal commands,
+file changes and unknown tools release the buffer and keep subsequent progress.
+Plain conversation without work also discards the pending commentary. Final
+answer streaming, runtime errors and interruption semantics are unchanged.
+
+Only the exact direct Python invocation is recognized, including an optional
+`bash -lc` shell wrapper; compound commands or arbitrary helper scripts are
+work, rather than relying on text that merely mentions memory. The current
+request instructions ask the model to use that command quietly. This gate
+is specific to Codex's execution events; Claude/Grok answer/progress stream
+classification has not been changed by this patch.
