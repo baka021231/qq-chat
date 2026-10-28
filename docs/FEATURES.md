@@ -178,3 +178,10 @@ Claude `/models` 读取 profile 的配置目录，`/model default` 恢复其配�
 ### 会话推理强度（仅主人）
 
 `/effort` 查询当前模型、强度和支持档位；`/effort 档位` 设置；`/effort default` 恢复当前模型目录默认强度。Codex 按实时目录、Claude 按配置目录校验，不支持的档位或查询失败不更改原设置。按会话和 profile 存入 `profile_models`，旧 Codex 表保留兼容，下一条消息生效，重启和 `/new` 保留，只影响当前主人会话。未选择模型时首次设置会固定当前会话模型；再次 `/model` 切换会重置为所选模型默认强度。
+
+## 手动记忆检索 v1
+
+- 新增只读 memory_search，直接返回带相对文件名与行号的正文片段，无单独 read 工具。限定 workspace/memory，私聊主人可检索 shared/private，群内主人仅 shared/当前群；访客不发工具授权。
+- FULL 单 agent 每轮获得命令入口，绑定短期桥接授权，调用同一 Unix 服务；Claude FRONT 使用 qq MCP 工具。memory-only 授权不能调用后台或拍一拍。
+- 关键词检索，最多5条/2000字；拒绝目录参数和范围伪造，跳过符号链接、硬链接、特殊文件；扫描有预算并标明不完整。memory.enabled=false 可关闭。
+- 不自动迁移日记、不自动写入或每轮检索、不更改 /new、语音和前后台设置；现有通用文件工具权限不受此检索边界约束。部署和真实模型回忆效果待验收。详见 MEMORY.md。

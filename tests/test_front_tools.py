@@ -110,7 +110,7 @@ class FrontToolsTests(unittest.IsolatedAsyncioTestCase):
                         {'jsonrpc':'2.0','id':4,'method':'tools/call','params':{'name':'poke','arguments':{'target':3}}}]
             out, err = await asyncio.wait_for(process.communicate(('\n'.join(json.dumps(r) for r in requests)+'\n').encode()), 5)
             replies = [json.loads(line) for line in out.splitlines()]
-            self.assertEqual(len(replies[1]['result']['tools']), 6)
+            self.assertEqual(len(replies[1]['result']['tools']), 7)
             self.assertFalse(replies[2]['result'].get('isError', False))
             self.assertTrue(replies[3]['result']['isError'])
             self.assertEqual(err, b'')
