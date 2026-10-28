@@ -40,6 +40,22 @@ class MessagePolicyTests(unittest.TestCase):
                     bridge.db.close()
         asyncio.run(check())
 
+    def test_grok_single_owner_keeps_private_rules_out_of_guest_profile(self):
+        from tests.test_grok_agent import config
+        async def check():
+            with tempfile.TemporaryDirectory() as folder, patch('qq_chat.bridge.BASE', Path(folder)):
+                root=Path(folder);(root/'workspace').mkdir();(root/'workspace/OWNER.md').write_text('owner-private-canary')
+                b=Bridge(config())
+                try:
+                    owner=Source('private',10001,10001);guest=Source('group',20001,30001,'主人')
+                    a=await b.turn_request(owner,True);g=await b.turn_request(guest,False)
+                    self.assertEqual((a.level,a.model),('full','grok-4.7'))
+                    self.assertEqual((g.level,g.model),('none','haiku'))
+                    self.assertIn('owner-private-canary',a.instructions);self.assertNotIn('owner-private-canary',g.instructions)
+                    self.assertEqual(b.agent_for(guest).name,'guest');self.assertIsNone(g.grant)
+                finally:b.db.close()
+        asyncio.run(check())
+
     def test_private_whitelist_is_chat_only_and_does_not_change_owner(self):
         event = {'post_type': 'message', 'message_type': 'private', 'self_id': 456,
                  'user_id': 789, 'sender': {'nickname': '心糖'},

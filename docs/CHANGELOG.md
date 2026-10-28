@@ -2,6 +2,14 @@
 
 ## 2026-10-28
 
+### Grok 主人单 agent 前台
+
+- 新增 GrokAgent 与 grok_build profile；仅主人 CHAT/FULL、back 为空，访客继续独立 Claude Haiku。显式 bypassPermissions/sandbox off 对齐原 Codex 主人操作权限，不扩展 Linux 用户或 Windows 只读边界。
+- 接入 streaming-messages-json、私有 ACP prompt-file、会话/profile 模型隔离、/new、/stop 和图片；正文及人设不进入命令行，忽略 thinking 和内部签名。
+- 实测 Grok 会缓存首次系统规则，使用恒定公开规则加每轮私有实时设定，验证续接同时刷新人设；实际 read/command 权限、有效 PNG 颜色识别与停止子命令通过。
+- 全量运行 195 项：193 通过，2 项既有 IndexTTS NumPy 音频转换测试因系统环境依赖跳过；不改隔离语音环境。语法、diff、目标配置和数据库副本升级检查通过。
+- 本次为主人另行授权的最简单单 agent 切换，不开启 Grok FRONT、访客或后台，不视为实施 PR5。原未提交 WORKER 人设及 BACKLOG/ROADMAP 修改保留。
+
 ### Linux V5 IndexTTS 语音后端
 
 - 新增独立的 `tools/indextts_backend.py`，沿用桥接 JSONL、WAV 校验及常驻进程协议，不改聊天与 QQ 发送逻辑；本地配置选择 V5，日常语音继续关闭。

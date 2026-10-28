@@ -180,3 +180,13 @@ python3 tools/restart_bridge.py
 完整示例见 `config.front-back.example.json`：主人前台 `claude_front` 使用 sonnet，访客 `claude_guest` 使用 haiku，后台 codex。合并现有私密配置并校验，主人确认部署后才重启；不要把示例的占位参数当真实登录信息。
 
 分离模式下 Claude 主人前台只能经 MCP 查询、派发、停止、追加要求与拍一拍当前主人；任务真实建立后桥接直接发编号回执。访客无工具。`/task` 手动入口保留，Codex 前台仍用手动入口。`/task check 编号` 只读查询一次、不自动放锁；确认结束后 `/task release 编号`。FRONT 本机隔离证据和启动耗时调查见设计第 14 节，两个性能实验开关未写入配置。
+
+### Grok 主人单 agent
+
+Grok Build 已登录后，可在 profiles 新增 `grok`，并设 front 为 grok、guest 仍为 claude_guest、back 为空：
+
+```json
+{"type":"grok_build","path":"/home/<user>/.local/bin/grok","model":"grok-4.7","models":["grok-4.7"],"permission_mode":"bypassPermissions","sandbox":"off","max_turns":100,"timeout_seconds":3600}
+```
+
+该模式让主人前台直接读写文件和执行命令，权限范围与原 Codex 主人单 agent 相同；不赋予 root 或 Windows 写权限。模型与会话独立保存，/new、/model、/stop 保留；访客不可选择 Grok。本机已验证续接、每轮人设更新、图片与正在运行命令的停止。回复完整校验后再发送，不即时逐 token 输出。缺失会话不自动重试，必要时用 /new 重建。配置修改前备份，校验后按授权重启。
