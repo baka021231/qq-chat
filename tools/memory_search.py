@@ -1,12 +1,14 @@
-"""Owner FULL-agent entry to the same bridge-authorized memory_search tool.
-
-Only grant path and query are accepted. No roots, scopes or identities come
-from the model. This is not a standalone filesystem search command.
-"""
+"""Owner FULL-agent entry to the bridge-authorized, per-turn memory tool."""
 import argparse
 import json
 import socket
 from pathlib import Path
+
+
+def failure(code, message):
+    # Fixed messages only: never echo token/config contents or server traces.
+    print(json.dumps({'error': message, 'code': code}, ensure_ascii=False))
+    return 1
 
 
 def main():
@@ -16,25 +18,39 @@ def main():
     args = parser.parse_args()
     try:
         env = json.loads(Path(args.grant).read_text())['mcpServers']['qq']['env']
+        socket_path, token = env['QQ_TOOL_SOCKET'], env['QQ_TOOL_TOKEN']
+        if not isinstance(socket_path, str) or not isinstance(token, str):
+            raise ValueError()
+    except FileNotFoundError:
+        return failure('grant_missing', '本轮授权文件不存在，请使用当前轮提供的命令，不能复用历史路径')
+    except (OSError, ValueError, KeyError, TypeError):
+        return failure('grant_invalid', '本轮授权文件无法读取或格式无效')
+    try:
         with socket.socket(socket.AF_UNIX) as conn:
             conn.settimeout(30)
-            conn.connect(env['QQ_TOOL_SOCKET'])
-            req = {'token': env['QQ_TOOL_TOKEN'], 'name': 'memory_search', 'arguments': {'query': args.query}}
+            conn.connect(socket_path)
+            req = {'token': token, 'name': 'memory_search', 'arguments': {'query': args.query}}
             conn.sendall((json.dumps(req, ensure_ascii=False) + '\n').encode())
             with conn.makefile('rb') as stream:
                 raw = stream.readline(65537)
-            if not raw or len(raw) > 65536:
-                raise ValueError()
-            reply = json.loads(raw)
-            if not reply.get('ok'):
-                message = '记忆检索未成功，授权可能已过期'
-                print(json.dumps({'error': message}, ensure_ascii=False))
-                return 1
-            print(json.dumps(reply['result'], ensure_ascii=False))
-            return 0
-    except (OSError, ValueError, KeyError):
-        print(json.dumps({'error': '记忆检索服务不可用或本轮授权已失效'}, ensure_ascii=False))
-        return 1
+    except TimeoutError:
+        return failure('service_timeout', '记忆检索服务响应超时')
+    except OSError:
+        return failure('service_unavailable', '无法连接记忆检索服务')
+    try:
+        if not raw or len(raw) > 65536:
+            raise ValueError()
+        reply = json.loads(raw)
+        if not isinstance(reply, dict):
+            raise ValueError()
+        if not reply.get('ok'):
+            if reply.get('error') == '工具授权已失效':
+                return failure('grant_expired', '本轮授权已到期或撤销，请使用当前轮提供的命令')
+            return failure('request_rejected', '记忆检索请求被服务拒绝，请检查参数与工具状态')
+        print(json.dumps(reply['result'], ensure_ascii=False))
+        return 0
+    except (ValueError, KeyError, TypeError):
+        return failure('invalid_response', '记忆检索服务返回了无效响应')
 
 
 if __name__ == '__main__':

@@ -23,7 +23,7 @@ class FakeApp:
         if method == 'model/list':
             return {'data': [{'model': 'model-a', 'defaultReasoningEffort': 'medium', 'supportedReasoningEfforts': [{'reasoningEffort': x} for x in ('low', 'medium', 'high')]},
                              {'model': 'model-b', 'defaultReasoningEffort': 'low', 'supportedReasoningEfforts': [{'reasoningEffort': x} for x in ('low', 'high')]}], 'nextCursor': None}
-        if method == 'thread/unsubscribe':
+        if method in ('thread/unsubscribe', 'thread/inject_items'):
             return {}
         if params.get('model') == self.reject and self.reject:
             raise RuntimeError('Selected model unavailable')

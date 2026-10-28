@@ -266,6 +266,10 @@ class MessagePolicyTests(unittest.TestCase):
                     pass
 
                 async def call(self, method, params):
+                    if method == 'thread/inject_items':
+                        assert params['items'][0]['role'] == 'developer'
+                        assert '历史轮次' in params['items'][0]['content'][0]['text']
+                        return {}
                     calls.append((method, params))
                     return {'thread': {'id': 'thread-' + str(len(calls))}}
 
