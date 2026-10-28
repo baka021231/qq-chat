@@ -31,7 +31,7 @@ def search(root, query, *, group_id=None, exclude_private_snapshots=False):
     """Return excerpts within a bridge-authenticated scope, never instructions.
 
     None means an owner private chat. Group IDs permit shared/ and that group
-    only. The internal exclusion flag is used after current diaries are copied;
+    only. The service excludes retired diary copies and generated snapshots;
     the original generated snapshots remain on disk but are not current facts.
     """
     terms = validate_query(query)
@@ -55,7 +55,8 @@ def search(root, query, *, group_id=None, exclude_private_snapshots=False):
             if name.startswith('.'):
                 continue
             if (exclude_private_snapshots and prefix == 'private'
-                    and re.fullmatch(r'existing-records-\d{8}-\d{6}-\d{6}', name)):
+                    and (name == 'diary-current' or
+                         re.fullmatch(r'existing-records-\d{8}-\d{6}-\d{6}', name))):
                 continue
             try:
                 info = os.stat(name, dir_fd=fd, follow_symlinks=False)

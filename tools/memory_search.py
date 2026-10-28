@@ -27,18 +27,7 @@ def main():
                 raise ValueError()
             reply = json.loads(raw)
             if not reply.get('ok'):
-                reason = reply.get('error')
-                # Diary errors are fixed service messages, never file contents
-                # or arbitrary OS exceptions. Do not mislabel a busy organizer
-                # as an expired capability.
-                diary_errors = {
-                    '日记正在整理，请稍后再查', '日记同步失败，本次未使用旧副本回答',
-                    '日记目录超过同步扫描上限', '日记数量超过本阶段同步上限',
-                    '日记总大小超过同步上限', '日记超过单文件同步上限',
-                    '日记必须是无链接的普通文件', '日记在读取中发生变化，请稍后重试',
-                    '日记不是有效文本', '日记同步锁不可用',
-                }
-                message = reason if isinstance(reason, str) and reason in diary_errors else '记忆检索未成功，授权可能已过期'
+                message = '记忆检索未成功，授权可能已过期'
                 print(json.dumps({'error': message}, ensure_ascii=False))
                 return 1
             print(json.dumps(reply['result'], ensure_ascii=False))

@@ -149,45 +149,38 @@ The current organizer still produces only log/story outputs. It cannot create
 or update topic files. Rules for creating new topics, updating existing current
 conclusions and preserving diary evidence are written down for that later
 stage; their presence does not mean a topic writer is enabled. Daily records
-stay in the existing our-story/development-logs layout, with OUR_STORY as index.
+live directly under memory/private/diary/ with our-story/development-logs
+and OUR_STORY.md as the date index (after local migration activation).
 No live model run is required just to save rules; the existing timer need not be
 restarted to pick up the file on its next run. Local rules, organizer, tests and
 private records remain excluded from the public repository.
 
-## Current diary copies on demand
+## Direct diary storage
 
-`ToolServer.call(memory_search)` uses `diary_sync.search_with_diaries`. The query
-is validated first. Only a bound owner private chat synchronizes sources; group
-queries go directly to their allowed memory scope without reading private
-sources or running the synchronizer. Visitors still have no grant.
+Daily records have one canonical location: workspace/memory/private/diary/.
+The first-person daily pages live in our-story/YYYY-MM/YYYY-MM-DD.md, technical
+logs in development-logs/YYYY-MM/YYYY-MM-DD.md, and OUR_STORY.md is the index.
+The owner's local writing rules and nightly organizer must switch together.
+Reflection rules remain outside memory in memory-rules/reflection.md.
 
-The trusted source whitelist is workspace/OUR_STORY.md and dated Markdown files
-in our-story/YYYY-MM/ and development-logs/YYYY-MM/. It does not include OWNER,
-SOUL, credentials, arbitrary files or tasks. The model cannot choose paths. The
-synchronizer copies into memory/private/diary-current with the same relative
-layout; the search then reads only memory as before. This boundary separates
-the trusted source copier from the query engine.
+ToolServer calls memory.search directly; it does not copy sources, acquire the
+organizer lock, or run a model before searching. Private owner queries include
+private/diary; groups still see only shared/ and their own groups/<id>/ scope.
+The service excludes private/diary-current and the generated
+existing-records-<date>-<time>-<microseconds> snapshots. Other manual memory is
+preserved. No all-chat capture, topic writer or semantic search is added.
 
-New/changed text is copied atomically per file, using content comparison rather
-than mtime alone. Unchanged copies are not rewritten. Removed source records
-remove only their managed copies, not hand-written private memory or original
-records. This is cache cleanup, not a general forgetting/delete feature. Old
-existing-records-<date>-<time>-<microseconds> snapshots remain on disk but are
-excluded from private service searches after a successful sync, so an old
-snapshot cannot resurrect an outdated statement. Other manual notes remain
-searchable. There is no background polling or instantaneous replication; a
-record saved before the next private lookup is refreshed at lookup time.
+For an existing installation, tools/migrate_diaries.py validates the fixed old
+OUR_STORY, our-story and development-logs sources; --apply copies them into the
+canonical directory under the nightly lock. It retains all originals as frozen
+recovery material. Existing identical destination files are skipped; different
+content aborts before any writes. Source whitelist, no-follow descriptor opens,
+hardlink rejection and bounded reads protect the offline migration. A partial
+copy can be retried; it is not a multi-file transaction. Migration is never run
+by a query, visitor or group call. Do not rerun it over edited canonical records.
 
-The copier opens directories/files relative to retained descriptors with
-NOFOLLOW, rejects hardlinks/special or invalid text files, and reads all sources
-before changing copies. Limits: 128 source records, 256 KiB each, 4 MiB total,
-2048 directory entries. Copies and source scanning share the existing local
-nightly.lock; a busy organizer returns a retryable tool error rather than
-blocking the conversation. Unsafe/incomplete input or copy failure also stops
-the lookup: it does not silently answer from stale cache. Per-file replacement
-is atomic, not a multi-file transaction; failed attempts converge on retry.
-
-This phase does not change diary writing rules, generate topics, synchronize
-private records into groups, or automatically start the nightly model. Changes
-that occur after a record has been read are picked up by a later query. The
-existing memory.enabled switch disables the whole service path.
+Deployment must back up local rules and organizer, migrate current originals,
+switch OWNER.md and nightly paths, and verify byte equality plus direct lookup.
+Do not treat merging public code as proof that private local files were moved.
+If rolling back, preserve newer canonical diary entries before restoring old
+writers. No symlinks or ongoing duplicate synchronization are required.
