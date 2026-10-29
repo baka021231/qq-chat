@@ -2,7 +2,7 @@
 
 本文描述桥接现在能做什么、有哪些限制、明确不支持什么。改动功能时，在同一个提交里更新本文。括号中的函数名和测试名指向对应实现和验证。
 
-尚未实现的需求、验收标准和待定事项统一记录在 `docs/BACKLOG.md`。
+需求进展、验收标准和待定事项统一记录在 `docs/BACKLOG.md`，其中保留已实现与部分完成条目，不能将整份待办表当成未实现清单。状态于 2026-10-29 对齐；功能实现、配置启用和真实 QQ 验收分别判断。
 
 ## Agent 与前后台模式
 
@@ -76,7 +76,7 @@ Claude `/models` 读取 profile 的配置目录，`/model default` 恢复其配�
 
 - 每个会话按 profile 保存持久会话映射；Codex 对应线程，Claude/Grok 对应各自 CLI 会话。QQ 会话范围是：主人私聊一条，每个群一条；主人在群里另有一条单独的操作线程，不与群友的聊天线程混用（`conversation_key`，`test_chat_passes_permissions_and_resumes_separate_threads`）。
 - 桥接重启后优先恢复对应 profile 的原会话；会话丢失时按各适配器规则处理，不能保证任意远端/CLI 会话永不丢失。
-- 桥接每轮重新读取 `workspace/SOUL.md` 和 `workspace/OWNER.md`，依次注入，OWNER.md 仅限核验主人会话，缺失则跳过，修改后下一条消息生效；AGENTS.md 仅由 Codex 原生加载，不再手动注入。
+- 桥接每轮重新读取 `workspace/SOUL.md` 和 `workspace/OWNER.md`，依次注入，OWNER.md 仅限核验主人会话，缺失则跳过。Claude/Grok 的人设下一轮刷新；Codex 已加载线程的 `thread/resume` 不采用新的 developerInstructions，修改桥接规则或 SOUL/OWNER 后需要 `/new` 新线程才生效。逐轮记忆授权另用可信 developer 历史项注入，不能据此推断整套人设也已热更新；AGENTS.md 仅由 Codex 原生加载，不再手动注入。
 - 详细的线程映射和终端接续方法见 `docs/APPSERVER-MIGRATION.md`。
 
 ## 回复
@@ -174,6 +174,8 @@ Claude `/models` 读取 profile 的配置目录，`/model default` 恢复其配�
 - **完整的自动长期记忆**：已有独立于模型会话的 memory 文件及手动关键词检索，`/new` 不删除它们；尚无自动事实写入、主题文件维护、通用同步、纠正/遗忘或每轮自动检索；日记直接写入 memory/private/diary，本机迁移与规则切换已完成。工作台设定与记忆检索是不同来源，详见下文和 `MEMORY.md`。
 
 ## 已知问题
+
+- **参考图片等待会累积**：引用／转发文字展开的 15 秒预算不覆盖随后逐张进行的参考图下载；图片获取失败可能长时间占用聊天处理，拖住后续消息。目前没有整组参考图时间预算，见 BACKLOG 第 18 项。
 
 - **历史上下文与文件权限**：OWNER.md 不再注入访客会话，AGENTS.md 与 SOUL.md 不应存放主人私人资料。此变更不会清除旧线程已经收到的资料，且不构成操作系统文件访问隔离；访客仍受禁止工具及读取私人资料的规则约束。
 - **触发词按子串匹配**："ams"会匹配 teams、programs 等包含这三个字母的单词，导致误触发。

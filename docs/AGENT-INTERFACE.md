@@ -47,7 +47,7 @@ QQ ⇄ NapCat ⇄ 桥接 ⇄ 统一接口 ⇄ 适配器（Codex / Claude Code / 
 | Claude Code | NONE/FRONT 用 `--system-prompt-file` 替换系统提示，FULL 用 `--append-system-prompt-file`，每轮重写 | 下一轮 |
 | Grok | 每轮写入 prompt 文件第一个文本块，与用户消息一起送入 | 下一轮；但每轮完整设定都留在会话历史里 |
 
-FEATURES.md 的“修改后下一条消息生效”和 ARCHITECTURE.md 的“下一轮生效”对 Codex 不成立，在第 4 步一并修正。
+2026-10-29 文档同步：FEATURES.md 与 ARCHITECTURE.md 已改为明确 Codex 的 `/new` 边界。本设计第 4 步的程序改造仍未实现；修正文档不代表完成了人设热更新。
 
 ## 2. 分层与职责
 
