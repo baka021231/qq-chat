@@ -22,7 +22,7 @@ from .task_commands import TaskCommands, serialized
 from .agents.config import legacy_codex_profile, settings
 from .agents.state import AgentState, recent_history
 from .files import MAX_FILE_BYTES, save_attachment
-from .images import MAX_IMAGE_BYTES, save_image
+from .images import MAX_IMAGE_BYTES, save_image, save_reference_image
 from .reply import stream_bubbles
 from .message_references import reference_segments, expand_references, reference_prompt
 from .moderation import BLOCK_SENDER, blocked_group_sender, bounded_guest_reply, obvious_abuse, update_blacklist
@@ -32,6 +32,8 @@ from websockets.asyncio.client import connect
 
 BASE = Path(__file__).resolve().parents[1]
 CONFIG = BASE / "config.json"
+REFERENCE_IMAGE_BUDGET = 15
+REFERENCE_REFRESH_TIMEOUT = 5
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 
@@ -353,7 +355,7 @@ class Bridge(TaskCommands):
             logging.info('Private attachment saved: %s', path)
         return prompts.attachments_saved(incoming.text, paths)
 
-    async def receive_images(self, incoming):
+    async def receive_images(self, incoming, *, prefer_url=False):
         if not owner_request(incoming.source, self.cfg['owner_qq']):
             raise ValueError('当前聊天未开放图片接收')
         if len(incoming.images) > 5:
@@ -362,16 +364,38 @@ class Bridge(TaskCommands):
         for image in incoming.images:
             if int(image.get('file_size') or 0) > MAX_IMAGE_BYTES:
                 raise ValueError('单张图片超过 20 MiB 上限')
+            url = image.get('url', '')
+            if prefer_url and url:
+                try:
+                    path = await save_reference_image('', url)
+                    paths.append(str(path))
+                    continue
+                except (ValueError, OSError, asyncio.TimeoutError):
+                    # Forwarded nodes may not exist in the client's message DB,
+                    # even when their signed CDN addresses are still readable.
+                    pass
             result = {}
             ident = image.get('file_id') or image.get('file')
             if ident:
                 try:
-                    result = await self.onebot_call('get_image', {'file': ident})
+                    if prefer_url:
+                        result = await asyncio.wait_for(
+                            self.onebot_call('get_image', {'file': ident}),
+                            REFERENCE_REFRESH_TIMEOUT)
+                    else:
+                        result = await self.onebot_call('get_image', {'file': ident})
                 except (ValueError, asyncio.TimeoutError):
                     # Fresh event URLs can still work when the image cache lookup fails.
                     pass
-            path = await asyncio.to_thread(save_image, result.get('file', ''),
-                                           result.get('url') or image.get('url', ''))
+            if prefer_url:
+                # The event URL has already failed; only retry a refreshed URL
+                # or local cache instead of fetching the same address twice.
+                refreshed_url = result.get('url', '')
+                path = await save_reference_image(
+                    result.get('file', ''), refreshed_url if refreshed_url != url else '')
+            else:
+                path = await asyncio.to_thread(save_image, result.get('file', ''),
+                                               result.get('url') or url)
             paths.append(str(path))
         return paths
 
@@ -699,9 +723,16 @@ class Bridge(TaskCommands):
                         await self.send(source, '图片接收失败：' + (str(error) if isinstance(error, ValueError) else '下载或保存失败，请重新发送。'))
                         continue
                 if reference_images:
+                    deadline = asyncio.get_running_loop().time() + REFERENCE_IMAGE_BUDGET
                     for number, image in enumerate(reference_images, 1):
+                        remaining = deadline - asyncio.get_running_loop().time()
+                        if remaining <= 0:
+                            reference_records.append({'kind': '提示', 'text': f'参考图片处理已超时（第{number}张），未读取图片内容。'})
+                            continue
                         try:
-                            paths = await self.receive_images(replace(incoming, images=(image,)))
+                            paths = await asyncio.wait_for(
+                                self.receive_images(replace(incoming, images=(image,)), prefer_url=True),
+                                remaining)
                             image_paths += tuple(paths)
                             reference_records.append({'kind': '参考图片读取结果', 'text': f'参考图片{number}对应文件：' + ', '.join(paths)})
                         except (ValueError, OSError, asyncio.TimeoutError):

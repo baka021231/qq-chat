@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from qq_chat.bridge import Bridge, Source, incoming_text
+from qq_chat.bridge import Bridge, Incoming, Source, incoming_text
 from qq_chat.message_references import expand_references, reference_prompt, MAX_TEXT
 
 
@@ -146,7 +146,8 @@ class ReferenceRoutingTests(unittest.IsolatedAsyncioTestCase):
                 return 'ok', True
             async def deliver(*args, **kwargs):
                 pass
-            async def receive_images(incoming):
+            async def receive_images(incoming, *, prefer_url=False):
+                self.assertTrue(prefer_url)
                 image_calls.append(incoming.images)
                 if image_fails:
                     raise ValueError('expired')
@@ -209,3 +210,39 @@ class ReferenceRoutingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_worker_expands_forward_card_with_at_trigger(self):
         await self.check_route(forward=True)
+
+    async def test_reference_budget_preserves_text_and_unblocks_next_message(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch('qq_chat.bridge.BASE', Path(directory)), \
+             patch('qq_chat.bridge.REFERENCE_IMAGE_BUDGET', .02):
+            bridge = Bridge({'owner_qq': 123, 'codex_path': 'unused'})
+            calls, downloads = [], []
+            async def receive(incoming, *, prefer_url=False):
+                downloads.append(prefer_url)
+                await asyncio.Event().wait()
+            async def chat(source, text, context_id=None, image_paths=()):
+                calls.append((text, image_paths))
+                return 'ok', True
+            bridge.receive_images, bridge.chat = receive, chat
+            source = Source('private', 123, 123)
+            bridge.queue.put_nowait(Incoming(source, 'first', references=(part('forward', id='bundle'),)))
+            bridge.queue.put_nowait(Incoming(source, 'second'))
+            async def expand(*args, **kwargs):
+                return ([{'kind': '正文片段', 'text': 'retained reference text'}],
+                        ({'file': 'slow'}, {'file': 'never-started'}))
+            with patch('qq_chat.bridge.expand_references', side_effect=expand):
+                task = asyncio.create_task(bridge.worker())
+                try:
+                    await asyncio.wait_for(bridge.queue.join(), 1)
+                    self.assertEqual(downloads, [True])
+                    self.assertEqual(len(calls), 2)
+                    self.assertIn('retained reference text', calls[0][0])
+                    self.assertIn('参考图片获取失败', calls[0][0])
+                    self.assertIn('参考图片处理已超时', calls[0][0])
+                    self.assertEqual(calls[0][1], ())
+                    self.assertTrue(calls[1][0].endswith('\nsecond'))
+                finally:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+                    bridge.db.close()

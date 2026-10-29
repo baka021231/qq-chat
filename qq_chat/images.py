@@ -1,4 +1,6 @@
 """Receive QQ images as private Linux files for Codex localImage inputs."""
+import asyncio
+import logging
 from pathlib import Path
 import tempfile
 from urllib.parse import urlsplit
@@ -14,8 +16,9 @@ def check_image_url(url):
     host = (parsed.hostname or '').lower()
     if (parsed.scheme not in ('http', 'https') or parsed.username or parsed.password
             or parsed.port not in (None, 80, 443)
-            or not any(host == domain or host.endswith('.' + domain)
-                       for domain in ('qpic.cn', 'qq.com'))):
+            or not (host == 'multimedia.nt.qq.com.cn'
+                    or any(host == domain or host.endswith('.' + domain)
+                           for domain in ('qpic.cn', 'qq.com')))):
         raise ValueError('图片下载地址不是受支持的 QQ 图片地址')
 
 
@@ -23,6 +26,30 @@ class QQImageRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         check_image_url(newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+async def save_reference_image(local_file, url):
+    """Let the caller time out without leaving a late thread result on disk."""
+    task = asyncio.create_task(asyncio.to_thread(save_image, local_file, url))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # Cancelling to_thread cannot stop urllib or a local copy. Reclaim only
+        # the new private file produced by this operation when it finishes.
+        def discard_result(future):
+            if future.cancelled():
+                return
+            try:
+                path = future.result()
+            except Exception:
+                return
+            try:
+                path.unlink()
+                path.parent.rmdir()
+            except OSError:
+                logging.warning('Could not remove a timed-out reference image')
+        task.add_done_callback(discard_result)
+        raise
 
 
 def image_suffix(path):

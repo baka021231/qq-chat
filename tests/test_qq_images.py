@@ -4,13 +4,14 @@ import io
 from pathlib import Path
 import struct
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 import zlib
 
 from qq_chat.codex_app import AppServer
 from qq_chat.bridge import Bridge, Incoming, Source, incoming_text
-from qq_chat.images import MAX_IMAGE_BYTES, QQImageRedirect, check_image_url, save_image
+from qq_chat.images import MAX_IMAGE_BYTES, QQImageRedirect, check_image_url, save_image, save_reference_image
 
 
 def sample_png():
@@ -60,15 +61,21 @@ class ImageTests(unittest.TestCase):
                 save_image(str(source), '', output)
 
     def test_url_and_redirect_boundaries(self):
-        for url in ('https://multimedia.nt.qq.com.cn/a', 'file:///etc/passwd',
+        for url in ('https://multimedia.nt.qq.com.cn.evil.test/a',
+                    'https://evil.multimedia.nt.qq.com.cn/a', 'https://qq.com.cn/a',
+                    'file:///etc/passwd',
                     'http://127.0.0.1/image', 'https://qq.com.evil.test/a',
                     'https://user:password@qq.com/a', 'https://qq.com:9090/a'):
             with self.assertRaises(ValueError):
                 check_image_url(url)
         check_image_url('https://multimedia.nt.qq.com/a')
+        check_image_url('https://multimedia.nt.qq.com.cn/a')
         check_image_url('https://gchat.qpic.cn/a')
         with self.assertRaises(ValueError):
             QQImageRedirect().redirect_request(None, None, 302, '', {}, 'http://127.0.0.1/')
+        with self.assertRaises(ValueError):
+            QQImageRedirect().redirect_request(None, None, 302, '', {},
+                                              'https://multimedia.nt.qq.com.cn.evil.test/a')
 
     def test_url_download_fallback_and_stream_size_limit(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -109,8 +116,102 @@ class ImageTests(unittest.TestCase):
             for incoming in (Incoming(Source('group', 999, 789), '', images=(image,)),
                              Incoming(own, '', images=(image,) * 6),
                              Incoming(own, '', images=({'file_size': MAX_IMAGE_BYTES + 1},))):
+                for prefer_url in (False, True):
+                    with self.assertRaises(ValueError):
+                        await bridge.receive_images(incoming, prefer_url=prefer_url)
+        asyncio.run(check())
+
+    def test_reference_url_succeeds_without_native_download(self):
+        async def check():
+            bridge = Bridge.__new__(Bridge)
+            bridge.cfg = {'owner_qq': 123}
+            async def native(*args):
+                self.fail('A working reference URL must not request get_image')
+            bridge.onebot_call = native
+            image = {'file': 'forwarded', 'url': 'https://multimedia.nt.qq.com.cn/download'}
+            with tempfile.TemporaryDirectory() as folder:
+                def save(local, url):
+                    self.assertEqual((local, url), ('', image['url']))
+                    return save_image('', url, Path(folder) / 'out')
+                class Response(io.BytesIO):
+                    headers = {}
+                class Opener:
+                    def open(self, request, timeout):
+                        return Response(sample_png())
+                with patch('qq_chat.images.save_image', side_effect=save), \
+                     patch('qq_chat.images.build_opener', return_value=Opener()):
+                    paths = await bridge.receive_images(
+                        Incoming(Source('group', 999, 123), '', images=(image,)), prefer_url=True)
+                self.assertEqual(Path(paths[0]).read_bytes(), sample_png())
+        asyncio.run(check())
+
+    def test_reference_expired_url_uses_refreshed_cache(self):
+        async def check():
+            bridge = Bridge.__new__(Bridge)
+            bridge.cfg = {'owner_qq': 123}
+            calls = []
+            async def native(action, params):
+                calls.append((action, params))
+                return {'file': '/cache/image.png', 'url': 'https://gchat.qpic.cn/new'}
+            bridge.onebot_call = native
+            image = {'file': 'forwarded', 'url': 'https://gchat.qpic.cn/expired'}
+            with patch('qq_chat.bridge.save_reference_image',
+                       side_effect=[OSError('expired'), Path('/saved/image.png')]) as save:
+                paths = await bridge.receive_images(
+                    Incoming(Source('private', 123, 123), '', images=(image,)), prefer_url=True)
+            self.assertEqual(paths, ['/saved/image.png'])
+            self.assertEqual(calls, [('get_image', {'file': 'forwarded'})])
+            self.assertEqual(save.call_args_list[-1].args,
+                             ('/cache/image.png', 'https://gchat.qpic.cn/new'))
+        asyncio.run(check())
+
+    def test_reference_refresh_timeout_cancels_request_and_does_not_retry_old_url(self):
+        async def check():
+            bridge = Bridge.__new__(Bridge)
+            bridge.cfg = {'owner_qq': 123}
+            cancelled = asyncio.Event()
+            async def native(*args):
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.set()
+            bridge.onebot_call = native
+            image = {'file': 'forwarded', 'url': 'https://gchat.qpic.cn/expired'}
+            with patch('qq_chat.bridge.REFERENCE_REFRESH_TIMEOUT', .01), \
+                 patch('qq_chat.bridge.save_reference_image', side_effect=ValueError('unavailable')) as save:
                 with self.assertRaises(ValueError):
-                    await bridge.receive_images(incoming)
+                    await asyncio.wait_for(bridge.receive_images(
+                        Incoming(Source('private', 123, 123), '', images=(image,)), prefer_url=True), .5)
+            self.assertTrue(cancelled.is_set())
+            self.assertEqual([call.args for call in save.call_args_list],
+                             [('', image['url']), ('', '')])
+        asyncio.run(check())
+
+    def test_cancelled_reference_download_removes_late_file(self):
+        async def check():
+            release = threading.Event()
+            finished = threading.Event()
+            with tempfile.TemporaryDirectory() as folder:
+                target = Path(folder) / 'new' / 'image.png'
+                def delayed_save(*args):
+                    if not release.wait(1):
+                        raise TimeoutError('test did not release downloader')
+                    target.parent.mkdir()
+                    target.write_bytes(sample_png())
+                    finished.set()
+                    return target
+                with patch('qq_chat.images.save_image', side_effect=delayed_save):
+                    try:
+                        with self.assertRaises(TimeoutError):
+                            await asyncio.wait_for(save_reference_image('', 'unused'), .01)
+                    finally:
+                        release.set()
+                    self.assertTrue(await asyncio.to_thread(finished.wait, 1))
+                    for _ in range(200):
+                        if not target.parent.exists():
+                            break
+                        await asyncio.sleep(.001)
+                    self.assertFalse(target.parent.exists())
         asyncio.run(check())
 
     def test_app_server_receives_local_image_alongside_text(self):
