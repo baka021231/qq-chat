@@ -60,7 +60,7 @@ NapCat OneBot 11 与本机 Agent 会话之间的桥接，支持 Codex、Claude C
 | `group_user_blacklist` | 群聊用户 QQ 号列表，默认空；跨群静默忽略，动态拉黑会保存，主人豁免。主人用 `/blacklist` 查看、`/block QQ号` 添加、`/unblock QQ号` 解除 |
 | `show_tool_progress` | 是否推送普通工具调用摘要，默认 false；已识别的纯记忆命令摘要不显示 |
 | `memory.enabled` | 手动记忆检索开关，默认 true；false 禁止查询并不为 FULL 轮次发放记忆授权，详见 docs/MEMORY.md |
-| `voice` | 可选本地语音回复，默认关闭；启用后正常回复先发文字，再补对应语音。配置见 `docs/VOICE.md` |
+| `voice` | 可选本地语音回复，默认关闭；`mode` 默认 `reply`，正常回复先发文字再补对应语音；`tool` 时改由主人单 agent 调用 `speak` 自己决定何时说、用什么风格。配置见 `docs/VOICE.md` |
 | `agents` | 可选 profile 配置；省略保持 Codex；back 可空或指定一个后台；Codex profile 省略 path 时继承 codex_path |
 | `agents.group_guest` | 可选普通群聊 profile；未设置时沿用 agents.guest。主人使用 front，白名单访客私聊使用 guest；不改变身份、权限或群聊触发条件 |
 | `tasks.progress` | 后台进度推送：direct（默认）或 silent。silent 仅关闭进度推送，仍保留固定派发回执及任务结果回报；不是完整的默认／详细工作模式切换 |

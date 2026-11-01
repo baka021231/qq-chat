@@ -11,6 +11,7 @@
   "show_tool_progress": false,
   "voice": {
     "enabled": false,
+    "mode": "reply",
     "timeout_seconds": 120,
     "command": [
       "/home/<user>/.local/share/aemeath-voice/venv/bin/python",

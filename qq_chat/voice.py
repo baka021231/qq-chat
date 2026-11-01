@@ -14,6 +14,11 @@ import wave
 from .speech_normalize import normalize_for_speech
 
 MAX_AUDIO_BYTES = 8 * 1024 * 1024
+# Names only; the synthesis backend owns what each style means.
+STYLES = ('日常', '开心', '安慰')
+INTENSITIES = ('低', '中', '高')
+SPEAK_MIN_CHARS = 6
+SPEAK_MAX_CHARS = 140
 
 
 def speech_text(text):
@@ -38,6 +43,18 @@ def speech_chunks(text, limit=140):
             yield chunk
 
 
+def speak_text(text, style, intensity):
+    """Check one model-chosen line; errors are written for the model to fix and retry."""
+    if style not in STYLES or intensity not in INTENSITIES:
+        raise ValueError('style 或 intensity 不在可选范围内')
+    text = speech_text(text) if isinstance(text, str) else ''
+    if len(re.findall(r'\w', text)) < SPEAK_MIN_CHARS:
+        raise ValueError(f'这段语音太短（少于{SPEAK_MIN_CHARS}个字），单独合成容易念坏；请和前后的话合成一句完整的话再调用')
+    if len(text) > SPEAK_MAX_CHARS:
+        raise ValueError(f'一次语音最多{SPEAK_MAX_CHARS}字；请拆成几次调用，每次一个完整的意思')
+    return text
+
+
 def validate_wav(data):
     if not isinstance(data, bytes) or not 44 < len(data) <= MAX_AUDIO_BYTES:
         raise ValueError('Invalid speech audio size')
@@ -59,7 +76,9 @@ class ProcessSynthesizer:
         self.process = None
         self.lock = asyncio.Lock()
 
-    async def synthesize(self, text):
+    async def synthesize(self, text, **options):
+        """options (style, intensity) are sent only when given, so text-only backends keep working."""
+        request = {'text': text, **options}
         async with self.lock:
             try:
                 async with asyncio.timeout(self.timeout):
@@ -68,7 +87,7 @@ class ProcessSynthesizer:
                             *self.command, stdin=asyncio.subprocess.PIPE,
                             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                             limit=MAX_AUDIO_BYTES * 2)
-                    self.process.stdin.write((json.dumps({'text': text}, ensure_ascii=False) + '\n').encode())
+                    self.process.stdin.write((json.dumps(request, ensure_ascii=False) + '\n').encode())
                     await self.process.stdin.drain()
                     line = await self.process.stdout.readline()
                     if len(line) > MAX_AUDIO_BYTES * 2:
@@ -102,8 +121,18 @@ class VoiceReplies:
         text = speech_text(reply)
         if not text or self.blocked(source):
             return True
+        return self._enqueue(source, text, {})
+
+    def say(self, source, text, style, intensity):
+        """Queue one line chosen by the agent; raises ValueError for the model to correct."""
+        text = speak_text(text, style, intensity)
+        if self.blocked(source):
+            return True
+        return self._enqueue(source, text, {'style': style, 'intensity': intensity})
+
+    def _enqueue(self, source, text, options):
         try:
-            self.queue.put_nowait((source, text))
+            self.queue.put_nowait((source, text, options))
         except asyncio.QueueFull:
             return False
         if self.task is None or self.task.done():
@@ -112,12 +141,12 @@ class VoiceReplies:
 
     async def run(self):
         while True:
-            source, text = await self.queue.get()
+            source, text, options = await self.queue.get()
             try:
                 for chunk in speech_chunks(text):
                     if self.blocked(source):
                         break
-                    audio = await self.synthesizer.synthesize(chunk)
+                    audio = await self.synthesizer.synthesize(chunk, **options)
                     if self.blocked(source):
                         break
                     await self.send_audio(source, audio)

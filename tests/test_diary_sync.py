@@ -104,9 +104,9 @@ class DiaryToolTests(unittest.IsolatedAsyncioTestCase):
         server = await self.setup_tools()
         diary = self.root/'workspace/memory/private/diary/our-story/2026-10/2026-10-28.md'
         diary.parent.mkdir(parents=True); diary.write_text('私人的新日记测试内容')
-        async with server.grant(self.group,memory_only=True) as grant:
+        async with server.grant(self.group,names=('memory_search',)) as grant:
             self.assertFalse((await server.call(self.token(grant),'memory_search',{'query':'私人的'}))['results'])
-        async with server.grant(self.owner,memory_only=True) as grant:
+        async with server.grant(self.owner,names=('memory_search',)) as grant:
             self.assertTrue((await server.call(self.token(grant),'memory_search',{'query':'新日记'}))['results'])
             diary.write_text('私人的更新日记测试内容')
             self.assertTrue((await server.call(self.token(grant),'memory_search',{'query':'更新日记'}))['results'])

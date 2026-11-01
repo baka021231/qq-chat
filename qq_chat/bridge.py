@@ -16,7 +16,7 @@ from . import prompts
 from .front_switch import command as switch_front_command
 from .agents import CHAT, FULL, NONE, TurnRequest, build_agents
 from .agents.base import MissingSession, Interrupted, FRONT
-from .tool_server import ToolServer
+from .tool_server import SPEAK, ToolServer
 from .tasks import TaskManager
 from .task_commands import TaskCommands, serialized
 from .agents.config import legacy_codex_profile, settings
@@ -155,6 +155,8 @@ class Bridge(TaskCommands):
         self.last_send = 0.0
         self.queue = asyncio.Queue(maxsize=8)
         voice = cfg.get('voice') or {}
+        if voice.get('mode', 'reply') not in ('reply', 'tool'):
+            raise ValueError('voice.mode must be reply or tool')
         self.voice = None
         if voice.get('enabled', False):
             self.voice = VoiceReplies(
@@ -318,9 +320,16 @@ class Bridge(TaskCommands):
             if not self.blocked(source):
                 await self._send_message(source, message, timeout=90)
 
+    def speak_enabled(self):
+        """tool mode: the agent decides when to speak; replies are not voiced automatically."""
+        return (getattr(self, 'voice', None) is not None
+                and (self.cfg.get('voice') or {}).get('mode', 'reply') == 'tool')
+
     async def enqueue_voice(self, source, reply):
         voice = getattr(self, 'voice', None)
-        if voice is not None and not voice.submit(source, reply):
+        if voice is None or self.speak_enabled():
+            return
+        if not voice.submit(source, reply):
             await self.send(source, '语音队列已满，本次仅发送文字。')
 
     async def onebot_call(self, action, params):
@@ -427,7 +436,7 @@ class Bridge(TaskCommands):
         request.runtime_instructions = ('本轮未提供终端记忆检索授权。'
                                         '不要复用历史轮次的 memory_search 命令或授权路径。')
         memory_grant = self.__dict__.get('_memory_grants', {}).get(request.key)
-        if authorized and memory_grant is not None:
+        if authorized and memory_grant is not None and 'memory_search' in memory_grant.names:
             command = shlex.join(['python3', '-I', str(BASE / 'tools' / 'memory_search.py'),
                                   '--grant', memory_grant.config_path, '--query'])
             memory_instructions = ('\n本轮可手动调用 memory_search。需要回忆过去事实、偏好或决定时，'
@@ -441,6 +450,15 @@ class Bridge(TaskCommands):
             request.instructions += memory_instructions
             request.runtime_instructions = ('以下记忆检索指令仅适用于当前轮，替代历史中的命令和路径。'
                                             + memory_instructions)
+        if authorized and memory_grant is not None and SPEAK in memory_grant.names:
+            command = shlex.join(['python3', '-I', str(BASE / 'tools' / 'speak.py'),
+                                  '--grant', memory_grant.config_path])
+            speak_instructions = ('\n本轮可调用 speak，用自己的声音说话。用终端执行以下命令，'
+                                  '把参数换成本次内容：\n'
+                                  + command + ' --style 日常 --intensity 中 --text "要说的话"\n'
+                                  + prompts.SPEAK_RULES + '授权文件仅本轮有效，不要复用历史轮次的 speak 命令。')
+            request.instructions += speak_instructions
+            request.runtime_instructions += '\n以下语音指令仅适用于当前轮。' + speak_instructions
         return request
 
     async def thread_for(self, source, authorized):
@@ -616,10 +634,11 @@ class Bridge(TaskCommands):
                         return await self._chat(source, text, context_id, image_paths)
                 finally:
                     self._front_grants.pop(self.conversation(source), None)
+        names = [name for name, on in (('memory_search', self.cfg.get('memory', {}).get('enabled', True)),
+                                       (SPEAK, self.speak_enabled())) if on]
         if (owner_request(source, self.cfg['owner_qq']) and not config.get('back')
-                and self.cfg.get('memory', {}).get('enabled', True)
-                and server and server.server is not None):
-            async with server.grant(source, memory_only=True) as grant:
+                and names and server and server.server is not None):
+            async with server.grant(source, names=names) as grant:
                 self._memory_grants[self.conversation(source)] = grant
                 try:
                     async with self.front_execution(source, agent):
@@ -878,7 +897,7 @@ class Bridge(TaskCommands):
             await self.agents[name].start()
         await self.tasks.recover_after_restart()
         if (self.cfg.get('agents', {}).get('back')
-                or self.cfg.get('memory', {}).get('enabled', True)):
+                or self.cfg.get('memory', {}).get('enabled', True) or self.speak_enabled()):
             await self.tool_server.start()
         logging.info("App Server initialized")
         while True:

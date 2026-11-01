@@ -190,7 +190,7 @@ PR4 前置小修复：TaskManager.check 按原会话校验，再调用 CodexAgen
 
 ## PR4：前台工具授权
 
-tool_server 绑定 run/tools.sock，目录 700、socket 600，拒绝替换普通文件或活 socket。Bridge.chat 对已核验主人分两路生成逐轮 ToolGrant：back 非空的 Claude FRONT 可用完整七工具；back 为空且 memory 启用的 FULL 主人只取得 memory_search 授权（通过命令入口，不改变内置工具集）。工具服务在配置后台或启用 memory 时启动；MCP 配置包含 socket 和随机令牌，权限 600，令牌绑定 Source/会话并限时，finally 撤销。工具请求独立协程处理，不取会话锁，避免前台 await agent.run 时死锁。访客、报告轮次不取得 grant。
+tool_server 绑定 run/tools.sock，目录 700、socket 600，拒绝替换普通文件或活 socket。Bridge.chat 对已核验主人分两路生成逐轮 ToolGrant：back 非空的 Claude FRONT 可用完整七工具；back 为空的 FULL 主人按配置取得 memory_search（memory 启用）和 speak（voice.mode=tool 且语音已启用）授权，均通过命令入口，不改变内置工具集；grant 的工具名单写在 ToolGrant.names，turn_request 只为名单内的工具注入命令。speak 不在 Claude FRONT 的七工具集合内。工具服务在配置后台、启用 memory 或启用 speak 时启动；MCP 配置包含 socket 和随机令牌，权限 600，令牌绑定 Source/会话并限时，finally 撤销。工具请求独立协程处理，不取会话锁，避免前台 await agent.run 时死锁。访客、报告轮次不取得 grant。
 
 Claude FRONT 不加 safe-mode，设置两个禁用记忆环境变量、空 cwd、空内置工具、显式 MCP 和 dontAsk；init.tools 精确等于 FRONT_TOOLS，工具缺失和多出都失败，运行中也检查白名单。CHAT 全轮缓冲检查伪调用及固定回执标记后才交付。NONE/FULL 原规则保留；本机版本隔离证据见 FRONT-BACK 14 节，不由 tools 为空推断 hooks 或插件关闭。
 
@@ -220,6 +220,7 @@ Grok 续接时会缓存首次系统规则，单纯更换 --agent 文件未能刷
 
 - `history` 与 `group_context` 是聊天续接/参考；`memory` 是独立本地文件，聊天history不会自动变成记忆。日记和详细日志直接写入 memory/private/diary，查询直接搜索 memory，不复制或刷新副本。
 - `ToolServer.call` 按真实 Source 决定 root 下的 shared/private/当前群目录，模型只能传 query。memory-only 授权的 tools/list 也只含 memory_search，不能借它派单或拍一拍。
+- `tools/speak.py` 与 memory_search 同构，只传 text/style/intensity。`ToolServer.call` 用绑定的 Source 调 `VoiceReplies.say`，模型不能指定目标；校验错误原样返回给模型以便改写重试。风格名在 `voice.STYLES`，对应的参考音频与情绪向量只在 `tools/indextts_backend.py` 的 PRESETS，协议不接受路径。`memory_progress.speak_command` 识别本轮下发的 speak 命令形状，与记忆检索一样不放出进度。
 - `tools/memory_search.py` 只读取本轮 grant 并请求 Unix 服务；token 不进入 argv、日志或返回值，轮次结束撤销并删除授权文件。Codex 在 turn/start 前用 thread/inject_items 注入当前轮记忆命令，避免已加载线程恢复时沿用旧授权路径；注入失败不开始该轮。FULL 仍保留其他文件工具，不能将此范围检查说成系统沙箱。
 - `memory.search` 以目录描述符逐层打开，NOFOLLOW 并排除硬链接/特殊文件；每文件最多3个不同片段，含有限相邻上下文，同分时正文优先于Markdown标题；最多5条、单条500字、正文共2000字。关键词检索不等于语义检索，扫描预算与 partial 语义见 MEMORY.md。
 - Codex 主人单 agent 有 memory grant 时，Bridge.run_turn 安装 MemoryProgress；AppServer 在转发进度前传递真实 item 活动事件。纯记忆调用丢弃缓冲，其他或未知工具释放缓冲；最终回答、失败和停止不经过该过滤。

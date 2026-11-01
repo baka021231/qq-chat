@@ -121,7 +121,7 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         for folder in ('private', 'shared', 'groups/20001'):
             (root / folder).mkdir(parents=True)
             (root / folder / 'note.md').write_text('关键词 ' + folder)
-        async with server.grant(self.group, memory_only=True) as grant:
+        async with server.grant(self.group, names=('memory_search',)) as grant:
             token = self.token(grant)
             listed = await server.call(token, 'tools/list', {})
             self.assertEqual([r['name'] for r in listed], ['memory_search'])
@@ -131,7 +131,7 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(ValueError): await server.call(token, 'memory_search', arguments)
             with self.assertRaises(ValueError): await server.call(token, 'dispatch_task', {'goal': 'not allowed'})
         with self.assertRaises(ValueError): await server.call(token, 'memory_search', {'query': '关键词'})
-        async with server.grant(self.owner, memory_only=True) as grant:
+        async with server.grant(self.owner, names=('memory_search',)) as grant:
             token = self.token(grant)
             self.cfg['memory'] = {'enabled': False}
             with self.assertRaisesRegex(ValueError, '已关闭'):
@@ -142,7 +142,7 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, '已失效'):
                 await server.call(token, 'memory_search', {'query': '关键词'})
         with self.assertRaises(ValueError):
-            async with server.grant(self.guest, memory_only=True): pass
+            async with server.grant(self.guest, names=('memory_search',)): pass
 
     async def test_real_cli_works_only_during_grant_without_identity_or_path_arguments(self):
         server = await self.setup_tools()
@@ -150,7 +150,7 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         folder.mkdir(parents=True)
         (folder / 'preference.md').write_text('解释时先说简短重点，按需展开。')
         command = [sys.executable, '-I', str(Path(__file__).parents[1] / 'tools/memory_search.py')]
-        async with server.grant(self.owner, memory_only=True) as grant:
+        async with server.grant(self.owner, names=('memory_search',)) as grant:
             async def run():
                 proc = await asyncio.create_subprocess_exec(*command, '--grant', grant.config_path,
                          '--query', '简短', stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
