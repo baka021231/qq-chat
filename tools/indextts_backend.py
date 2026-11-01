@@ -25,10 +25,15 @@ from qq_chat.voice import INTENSITIES, STYLES, validate_wav
 # The speaker reference drives rhythm and pauses as well as timbre, so each
 # style names its main reference. Vectors are IndexTTS2's
 # [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm].
+# The heavy styles take their emotion and slower pacing from the clip itself,
+# labelled by the owner's listening; intensity does not apply to them.
 PRESETS = {
     '日常': dict(reference='跟读日常平和原声.wav', vector=None),
     '开心': dict(reference='跟读日常平和原声.wav', vector=[0.5, 0, 0, 0, 0, 0, 0.1, 0]),
     '安慰': dict(reference='跟读日常平和原声.wav', vector=[0, 0, 0.1, 0, 0, 0.15, 0, 0.3]),
+    '激动': dict(reference='发声状态/激动.wav', vector=None),
+    '压着怒气': dict(reference='终极版/压住情绪.wav', vector=None),
+    '哽咽': dict(reference='发声状态/哽咽.wav', vector=None),
 }
 INTENSITY_SCALE = {'低': 0.6, '中': 1.0, '高': 1.4}
 # The package author's runtime played the V5 output at 1.15x.
@@ -76,6 +81,34 @@ def patch_duration(infer_v2):
     scope = {}
     exec(compile(source, infer_v2.__file__, 'exec'), infer_v2.__dict__, scope)
     infer_v2.IndexTTS2.infer_generator = scope['infer_generator']
+
+
+def cap_pauses(samples, sample_rate, longest=1.0, floor_db=-40):
+    """Shorten internal silences beyond `longest` seconds; leading and trailing audio is kept.
+
+    Heavy-style clips are half silence and the model copies multi-second gaps.
+    Only frames 40 dB below the peak are dropped, from the middle of the gap.
+    """
+    import numpy as np
+
+    audio = np.asarray(samples).reshape(-1)
+    frame = sample_rate // 100
+    count = len(audio) // frame
+    if count < 3:
+        return audio
+    frames = audio[:count * frame].astype(np.float64).reshape(count, frame)
+    rms = np.sqrt((frames ** 2).mean(axis=1)) + 1e-9
+    quiet = 20 * np.log10(rms / rms.max()) < floor_db
+    keep = np.ones(len(audio), dtype=bool)
+    limit, start = int(longest * 100), None
+    for index, silent in enumerate(np.append(quiet, False)):
+        if silent and start is None:
+            start = index
+        elif not silent and start is not None:
+            if start > 0 and index < count and index - start > limit:
+                keep[(start + limit // 2) * frame:(index - limit + limit // 2) * frame] = False
+            start = None
+    return audio[keep]
 
 
 def pcm_wav(sample_rate, samples):
@@ -180,7 +213,7 @@ class IndexSynthesizer:
         if not isinstance(result, tuple) or len(result) != 2:
             raise ValueError('IndexTTS returned no audio')
         sample_rate, samples = result
-        data = pcm_wav(sample_rate, samples)
+        data = pcm_wav(sample_rate, cap_pauses(samples, sample_rate))
         metrics = dict(model='aemeath-indextts-v5', provider=self.device,
                        load_seconds=self.load_seconds,
                        synthesis_seconds=time.perf_counter() - started,
