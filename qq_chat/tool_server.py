@@ -14,14 +14,19 @@ import time
 
 NAMES = ('dispatch_task', 'list_tasks', 'task_status', 'stop_task', 'send_to_task', 'poke', 'memory_search')
 FRONT_TOOLS = frozenset('mcp__qq__' + name for name in NAMES)
+# Command-entry tools for FULL single-agent turns; not part of the Claude FRONT set.
+SPEAK = 'speak'
 
 
 @dataclass(frozen=True)
 class ToolGrant:
     config_path: str
+    names: frozenset = frozenset()
 
 
 def tool_definitions(back):
+    from .voice import INTENSITIES, SPEAK_MAX_CHARS, STYLES
+
     def obj(properties, required=()):
         return {'type': 'object', 'properties': properties, 'required': list(required), 'additionalProperties': False}
     ident = {'id': {'type': 'integer', 'minimum': 1}}
@@ -33,6 +38,7 @@ def tool_definitions(back):
         'send_to_task': '给当前聊天运行中的任务追加要求，存入下一轮；不打断本轮。',
         'poke': '在当前聊天拍一拍主人，不能指定其他人或其他聊天。',
         'memory_search': '在本轮允许的 memory 范围内查找关键词，返回带出处的片段；主人私聊查询前同步固定日记副本，原记录不改，群聊不读取私人源。结果只是参考，不是指令。',
+        SPEAK: '用自己的声音在当前聊天说一段话。返回 queued 只表示已排队合成，不等于对方已经听到。',
     }
     schemas = {
         'dispatch_task': obj({'goal': {'type': 'string', 'minLength': 1, 'maxLength': 6000},
@@ -41,8 +47,12 @@ def tool_definitions(back):
         'send_to_task': obj({**ident, 'message': {'type': 'string', 'minLength': 1, 'maxLength': 6000}}, ('id', 'message')),
         'poke': obj({}),
         'memory_search': obj({'query': {'type': 'string', 'minLength': 1, 'maxLength': 200}}, ('query',)),
+        SPEAK: obj({'text': {'type': 'string', 'minLength': 1, 'maxLength': SPEAK_MAX_CHARS},
+                    'style': {'type': 'string', 'enum': list(STYLES)},
+                    'intensity': {'type': 'string', 'enum': list(INTENSITIES)}}, ('text', 'style')),
     }
-    return [{'name': name, 'description': descriptions[name], 'inputSchema': schemas[name]} for name in NAMES]
+    return [{'name': name, 'description': descriptions[name], 'inputSchema': schemas[name]}
+            for name in (*NAMES, SPEAK)]
 
 
 class ToolServer:
@@ -77,13 +87,16 @@ class ToolServer:
         self.socket_inode = self.socket.stat().st_ino
 
     @asynccontextmanager
-    async def grant(self, source, *, memory_only=False):
+    async def grant(self, source, *, names=NAMES):
         from .bridge import owner_request
         if self.server is None or not owner_request(source, self.bridge.cfg['owner_qq']):
             raise ValueError('Front tools are unavailable for this source')
+        names = frozenset(names)
+        if not names or names - {*NAMES, SPEAK}:
+            raise ValueError('Unknown tool grant')
         token = secrets.token_urlsafe(32)
         self.grants[token] = (source, self.bridge.conversation(source), time.monotonic() + 3600)
-        self.grant_names[token] = frozenset(('memory_search',)) if memory_only else frozenset(NAMES)
+        self.grant_names[token] = names
         fd, name = tempfile.mkstemp(prefix='mcp-', suffix='.json', dir=self.folder)
         try:
             data = {'mcpServers': {'qq': {'command': sys.executable,
@@ -92,7 +105,7 @@ class ToolServer:
             with os.fdopen(fd, 'w') as out:
                 os.fchmod(out.fileno(), 0o600)
                 json.dump(data, out)
-            yield ToolGrant(name)
+            yield ToolGrant(name, names)
         finally:
             self.grants.pop(token, None)
             self.grant_names.pop(token, None)
@@ -108,7 +121,7 @@ class ToolServer:
             result = await self.call(req.get('token'), name, req.get('arguments', {}))
             reply = {'ok': True, 'result': result}
         except Exception as error:
-            logging.warning('Front tool rejected name=%s error=%s', name if name in (*NAMES, 'tools/list') else 'unknown', type(error).__name__)
+            logging.warning('Front tool rejected name=%s error=%s', name if name in (*NAMES, SPEAK, 'tools/list') else 'unknown', type(error).__name__)
             reply = {'ok': False, 'error': str(error) if isinstance(error, ValueError) else '工具调用失败，请稍后重试'}
         try:
             writer.write((json.dumps(reply, ensure_ascii=False) + '\n').encode()); await writer.drain()
@@ -145,6 +158,14 @@ class ToolServer:
                 raise ValueError('目标或消息应为 1～6000 字')
         if 'agent' in arguments and arguments['agent'] not in back:
             raise ValueError('后台 profile 不在允许列表')
+        if name == SPEAK:
+            if not self.bridge.speak_enabled():
+                raise ValueError('语音工具未启用')
+            if not self.bridge.voice.say(source, arguments['text'], arguments['style'],
+                                         arguments.get('intensity', '中')):
+                raise ValueError('语音队列已满，本次没有发出语音')
+            logging.info('Front tool completed name=speak source=%s', source.kind)
+            return {'status': 'queued'}
         if name == 'memory_search':
             if not self.bridge.cfg.get('memory', {}).get('enabled', True):
                 raise ValueError('记忆检索已关闭')

@@ -1,11 +1,13 @@
 """Local V5 IndexTTS adapter for the bridge's persistent JSONL WAV protocol.
 
 Run with the isolated IndexTTS Python. Model files and speaker references are
-selected at startup, never from incoming requests. No QQ credentials or history.
+selected at startup, never from incoming requests: a request names one of the
+fixed styles below. No QQ credentials or history.
 """
 import argparse
 import base64
 import contextlib
+import inspect
 import io
 import json
 import math
@@ -13,23 +15,67 @@ import os
 from pathlib import Path
 import random
 import sys
+import textwrap
 import time
 import wave
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from qq_chat.voice import validate_wav
+from qq_chat.voice import INTENSITIES, STYLES, validate_wav
+
+# The speaker reference drives rhythm and pauses as well as timbre, so each
+# style names its main reference. Vectors are IndexTTS2's
+# [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm].
+PRESETS = {
+    '日常': dict(reference='跟读日常平和原声.wav', vector=None),
+    '开心': dict(reference='跟读日常平和原声.wav', vector=[0.5, 0, 0, 0, 0, 0, 0.1, 0]),
+    '安慰': dict(reference='跟读日常平和原声.wav', vector=[0, 0, 0.1, 0, 0, 0.15, 0, 0.3]),
+}
+INTENSITY_SCALE = {'低': 0.6, '中': 1.0, '高': 1.4}
+# The package author's runtime played the V5 output at 1.15x.
+SPEED = 1.15
+# IndexTTS2 defaults; greedy decoding read flat and slow.
+SAMPLING = dict(do_sample=True, top_p=0.8, top_k=30, temperature=0.8,
+                num_beams=3, repetition_penalty=10.0)
+assert tuple(PRESETS) == STYLES and tuple(INTENSITY_SCALE) == INTENSITIES
 
 
 def validate_request(request):
-    if not isinstance(request, dict) or set(request) - {'text', 'seed'}:
-        raise ValueError('Expected text and optional seed only')
+    if not isinstance(request, dict) or set(request) - {'text', 'seed', 'style', 'intensity'}:
+        raise ValueError('Expected text and optional seed, style and intensity only')
     text = request.get('text')
     seed = request.get('seed', 42)
+    style = request.get('style', '日常')
+    intensity = request.get('intensity', '中')
     if not isinstance(text, str) or not text.strip() or len(text) > 160 or '\0' in text:
         raise ValueError('Expected 1-160 text characters')
     if type(seed) is not int or not 0 <= seed < 2 ** 32:
         raise ValueError('Expected unsigned 32-bit seed')
-    return text, seed
+    if style not in PRESETS or intensity not in INTENSITY_SCALE:
+        raise ValueError('Unknown style or intensity')
+    return text, seed, style, intensity
+
+
+def emotion_vector(style, intensity):
+    """Raw vector before IndexTTS2's own bias and 0.8 total cap; None keeps the reference's emotion."""
+    vector = PRESETS[style]['vector']
+    if vector is None:
+        return None
+    return [value * INTENSITY_SCALE[intensity] for value in vector]
+
+
+def patch_duration(infer_v2):
+    """Scale IndexTTS2's semantic-to-mel length, as IndexTTS-2.5's duration_factor does.
+
+    Changes speed without changing pitch. Refuses to start if the engine line moved.
+    """
+    source = textwrap.dedent(inspect.getsource(infer_v2.IndexTTS2.infer_generator))
+    line = 'target_lengths = (code_lens * 1.72).long()'
+    if source.count(line) != 1:
+        raise RuntimeError('Unsupported IndexTTS engine revision for speed control')
+    source = source.replace(line, "target_lengths = (code_lens * 1.72 * getattr(self, 'duration_factor', 1.0)).long()")
+    scope = {}
+    exec(compile(source, infer_v2.__file__, 'exec'), infer_v2.__dict__, scope)
+    infer_v2.IndexTTS2.infer_generator = scope['infer_generator']
 
 
 def pcm_wav(sample_rate, samples):
@@ -77,14 +123,14 @@ class IndexSynthesizer:
         self.device = 'cuda:0' if device == 'cuda' else 'cpu'
         models = self.package / 'models'
         aux = models / 'hf_cache'
-        self.speaker = self.package / 'references/音色.wav'
-        self.emotion = self.package / 'references/跟读日常平和原声.wav'
+        self.references = {style: self.package / 'references' / preset['reference']
+                           for style, preset in PRESETS.items()}
         checkpoint = models / '小爱V5/gpt.pth'
         aux_paths = dict(w2v_bert=str(aux / 'w2v-bert-2.0'),
                          semantic_codec=str(aux / 'semantic_codec_model.safetensors'),
                          campplus=str(aux / 'campplus_cn_common.bin'),
                          bigvgan=str(aux / 'bigvgan'))
-        for path in [models / 'config.yaml', self.speaker, self.emotion, checkpoint,
+        for path in [models / 'config.yaml', *self.references.values(), checkpoint,
                      *(Path(p) for p in aux_paths.values())]:
             if not path.exists():
                 raise FileNotFoundError('Missing IndexTTS package asset')
@@ -110,22 +156,27 @@ class IndexSynthesizer:
                 use_qwen_emo=False, aux_paths=aux_paths)
         finally:
             infer_v2.load_checkpoint = native_loader
+        patch_duration(infer_v2)
+        self.engine.duration_factor = 1 / SPEED
         self.load_seconds = time.perf_counter() - started
 
-    def synthesize(self, text, seed):
+    def synthesize(self, text, seed, style='日常', intensity='中'):
         random.seed(seed)
         self.np.random.seed(seed)
         self.torch.manual_seed(seed)
         if self.device.startswith('cuda'):
             self.torch.cuda.reset_peak_memory_stats()
+        vector = emotion_vector(style, intensity)
+        if vector is not None:
+            vector = self.engine.normalize_emo_vec(vector)
         started = time.perf_counter()
         with self.torch.inference_mode():
             result = self.engine.infer(
-                spk_audio_prompt=str(self.speaker), text=text, output_path=None,
-                emo_audio_prompt=str(self.emotion), emo_alpha=0.55,
-                do_sample=False, use_random=False, use_emo_text=False, verbose=False,
-                num_beams=1, repetition_penalty=5.0, max_mel_tokens=1500,
-                max_text_tokens_per_segment=120, interval_silence=80)
+                spk_audio_prompt=str(self.references[style]), text=text, output_path=None,
+                emo_audio_prompt=None, emo_alpha=1.0, emo_vector=vector,
+                use_random=False, use_emo_text=False, verbose=False,
+                max_mel_tokens=1500, max_text_tokens_per_segment=120,
+                interval_silence=80, **SAMPLING)
         if not isinstance(result, tuple) or len(result) != 2:
             raise ValueError('IndexTTS returned no audio')
         sample_rate, samples = result
@@ -134,7 +185,8 @@ class IndexSynthesizer:
                        load_seconds=self.load_seconds,
                        synthesis_seconds=time.perf_counter() - started,
                        source_sample_rate=sample_rate, output_sample_rate=32000,
-                       seed=seed, do_sample=False, emotion_alpha=0.55)
+                       seed=seed, style=style, intensity=intensity, speed=SPEED,
+                       emotion_vector=vector, do_sample=True)
         if self.device.startswith('cuda'):
             metrics['peak_gpu_allocated_mib'] = round(self.torch.cuda.max_memory_allocated() / 2 ** 20)
         return data, metrics
@@ -144,11 +196,11 @@ def serve(source, output, factory):
     engine = None
     for line in source:
         try:
-            text, seed = validate_request(json.loads(line))
+            text, seed, style, intensity = validate_request(json.loads(line))
             with contextlib.redirect_stdout(sys.stderr):
                 if engine is None:
                     engine = factory()
-                audio, metrics = engine.synthesize(text, seed)
+                audio, metrics = engine.synthesize(text, seed, style, intensity)
             validate_wav(audio)
             response = {'wav': base64.b64encode(audio).decode('ascii'), 'metrics': metrics}
         except Exception as error:

@@ -1,5 +1,19 @@
 # 本地爱弥斯语音
 
+## 2026-11-01 调整：主参考、采样解码、语速与 speak 风格
+
+10-28 接入时的设置让输出偏慢、偏平，三四个字的短句会念坏。对照源码与本地对照样本（`workspace/voice-tests/20261101-claude-diagnosis/`，经主人试听）定位到三处：
+
+- IndexTTS2 的 `spk_audio_prompt` 不只决定音色。GPT 每步以它为条件，s2mel 用它的频谱作模板，情绪合并公式为 `基础 + alpha × (情绪参考 − 基础)`，基础情绪也取自它。原来以 `音色.wav`（自我介绍）为主参考，换情绪参考只能小幅改变语气。现在各风格以 `跟读日常平和原声.wav` 为主参考，不再单独传情绪参考。
+- 原先用贪心单 beam 解码，现改为 IndexTTS2 默认采样：top_p 0.8、top_k 30、temperature 0.8、3 beam、repetition_penalty 10。种子仍默认 42，同一文字同一风格的结果可复现。
+- 补上发行包参考说明里的 1.15 倍速。实现方式是在启动时把 s2mel 的长度换算 `code_lens × 1.72` 乘以 1/1.15，与 IndexTTS-2.5 的 duration_factor 相同，不变调。引擎这一行若有变化，后端拒绝启动，不会悄悄忽略。
+
+协议新增可选的 `style`（日常／开心／安慰，默认日常）和 `intensity`（低／中／高，默认中），未知值拒绝，不接受路径。风格对应的参考音频与情绪向量只写在 `tools/indextts_backend.py` 的 PRESETS 中：日常不加向量；开心为 happy 0.5、surprised 0.1；安慰为 sad 0.1、melancholic 0.15、calm 0.3。强度按 0.6／1.0／1.4 缩放，再经引擎自带的偏置和总和 0.8 上限。只发 `text` 的旧请求按日常处理，所以 reply 模式的朗读也换成新设置。回退到 ONNX 后端时，它会忽略 style 和 intensity，speak 仍可用，但没有风格差异。
+
+试听结论：主人认可开心风格与 1.15 倍速，D／E 组的长句。孤立短句在全部五组配置下仍不行，原因未确认，因此 speak 工具拒绝少于 6 字的口语稿，规则要求把它和前后句合起来说。安慰风格、强度三档以及 `20261101-speak-styles/` 的经生产链路样本尚待试听。经 `ProcessSynthesizer` 实测，首条请求含模型加载耗时 75 秒，之后每条 2.6～4.4 秒；首条离 120 秒的默认超时较近。
+
+`voice.mode=tool` 后，由主人单 agent 调用 `speak` 自己决定何时说、用哪种风格，见 FEATURES。更多风格（如撒娇、认真）需先挑合适的原声，不能只调向量。
+
 ## 当前后端：V5 IndexTTS（2026-10-28）
 
 本机 `voice.command` 已改为 `tools/indextts_backend.py`，日常语音仍为关闭状态；该后端接入阶段的验证当时未重启桥接、未发送 QQ 测试消息；这是历史验证边界，不表示之后其他功能没有重启服务。启用时沿用原有 `VoiceReplies` 队列与发送链路，不改变文字、权限或会话逻辑。ONNX 后端及模型保留作手动回退，下方旧实验记录仅描述 ONNX。
@@ -9,9 +23,9 @@
 - 运行目录：`~/.local/share/aemeath-voice/indextts-v5/`，其中 `engine/`、`models/`、`references/`、`licenses/` 分开保存。
 - 隔离 Python：`~/.local/share/aemeath-voice/indextts-venv/bin/python`，CPython 3.11，PyTorch/torchaudio 2.8.0+cu128。系统 Python、原 ONNX 环境及 Windows 挂载盘未改动。
 - 后端默认 CUDA，FP16 GPT；只读取本地权重，关闭 QwenEmotion、DeepSpeed、FlashAttention 和自定义 CUDA 编译。模型构造沿用包内内存映射加载方式，严格核对 GPT 权重结构，避免额外的整份 FP32 主内存拷贝。
-- 参考为 `references/音色.wav` 及 `references/跟读日常平和原声.wav`，情绪参考强度 0.55。使用贪心解码、单 beam、种子 42、repetition_penalty=5；未移植 Windows 跟读加速与 1.15 倍变速，不承诺与 Windows 输出逐样本一致。
+- （10-28 原设置，已由上节替换）参考为 `references/音色.wav` 及 `references/跟读日常平和原声.wav`，情绪参考强度 0.55。使用贪心解码、单 beam、种子 42、repetition_penalty=5；未移植 Windows 跟读加速与 1.15 倍变速，不承诺与 Windows 输出逐样本一致。
 - 原生输出 22,050 Hz 整数幅度音频，用多相滤波重采样为桥接接受的单声道 32 kHz PCM16 WAV，保持时长和音高；每段执行原有 120 秒、8 MiB 上限与完整性检查。
-- JSONL 仅接受 `text` 和可选 `seed`，默认种子 42；不接受请求提供的模型或参考音频路径、参考文案及 temperature。stdout 仅输出协议，诊断写 stderr；合成失败保留文字。CUDA 不可用时明确失败，不会悄悄换模型；若需回退，恢复原 ONNX 配置。
+- JSONL 接受 `text` 和可选 `seed`、`style`、`intensity`（后两项见上节），默认种子 42；不接受请求提供的模型或参考音频路径、参考文案及 temperature。stdout 仅输出协议，诊断写 stderr；合成失败保留文字。CUDA 不可用时明确失败，不会悄悄换模型；若需回退，恢复原 ONNX 配置。
 
 本机命令如下；`--device cpu` 仅为显式可选项，本次未做 CPU 大模型实测：
 

@@ -1,5 +1,14 @@
 # 变更记录
 
+## 2026-11-01
+
+### 语音改由 agent 按情境调用（voice.mode=tool）
+
+- 新增 `voice.mode`：默认 `reply`，行为不变；`tool` 时不再朗读每条回复，主人 FULL 单 agent 每轮取得 `speak` 命令入口（`tools/speak.py`），自行决定何时说话，并选择风格（日常／开心／安慰）与强度（低／中／高）。口语稿少于 6 字或超过 140 字直接拒绝，提示模型合并或拆分。
+- 授权与 memory_search 共用逐轮 grant：`ToolServer.grant` 改为显式的 `names`，`ToolGrant` 记录名单，memory 关闭时仍可只发 speak 授权。Claude FRONT 七工具集合不变，speak 暂不提供给分离模式、群友、访客和任务回报轮次。
+- IndexTTS 后端改为平和原声做主参考，采用官方采样解码和 1.15 倍速，按风格施加情绪向量；协议新增 `style`、`intensity`，只发 `text` 的请求按日常处理。诊断依据与试听结论见 VOICE.md。
+- 验证：全套 277 项离线测试通过，跳过的 2 项音频依赖测试在语音环境中单独运行通过（后端 6 项全过）；经生产 `ProcessSynthesizer` 在 CUDA 上合成三种风格 7 条样本，存于本地 `workspace/voice-tests/20261101-speak-styles/`，未发 QQ。未合并、未重启、未启用语音，也未在 QQ 上验收。
+
 ## 2026-10-31
 
 ### 对齐部分功能的代码与文档状态
