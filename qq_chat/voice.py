@@ -15,7 +15,7 @@ from .speech_normalize import normalize_for_speech
 
 MAX_AUDIO_BYTES = 8 * 1024 * 1024
 # Names only; the synthesis backend owns what each style means.
-STYLES = ('日常', '开心', '安慰')
+STYLES = ('日常', '开心', '安慰', '激动', '压着怒气', '哽咽')
 INTENSITIES = ('低', '中', '高')
 SPEAK_MIN_CHARS = 6
 SPEAK_MAX_CHARS = 140

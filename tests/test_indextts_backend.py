@@ -2,10 +2,11 @@ import base64
 import contextlib
 import io
 import json
+from pathlib import Path
 import unittest
 import wave
 
-from tools.indextts_backend import PRESETS, emotion_vector, pcm_wav, serve, validate_request
+from tools.indextts_backend import PRESETS, cap_pauses, emotion_vector, pcm_wav, serve, validate_request
 from qq_chat.voice import validate_wav
 
 try:
@@ -42,7 +43,11 @@ class IndexProtocolTests(unittest.TestCase):
                          ('你好', 42, '开心', '高'))
 
     def test_styles_map_to_fixed_references_and_scaled_vectors(self):
-        self.assertTrue(all('/' not in p['reference'] for p in PRESETS.values()))
+        for preset in PRESETS.values():
+            reference = Path(preset['reference'])
+            self.assertFalse(reference.is_absolute() or '..' in reference.parts)
+        for style in ('激动', '压着怒气', '哽咽'):
+            self.assertIsNone(emotion_vector(style, '高'))
         self.assertIsNone(emotion_vector('日常', '高'))
         self.assertEqual(emotion_vector('开心', '中'), PRESETS['开心']['vector'])
         low, high = emotion_vector('开心', '低'), emotion_vector('开心', '高')
@@ -99,6 +104,18 @@ class IndexAudioTests(unittest.TestCase):
         self.assertEqual(int(np.argmax(spectrum)), 440)
         self.assertGreater(np.max(np.abs(result)), 9500)
         self.assertLess(np.max(np.abs(result)), 10500)
+
+    def test_long_internal_silences_are_capped_but_edges_and_short_gaps_kept(self):
+        rate = 22050
+        tone = (8000 * np.sin(2 * np.pi * 300 * np.arange(rate // 2) / rate)).astype(np.int16)
+        def gap(seconds): return np.zeros(int(rate * seconds), dtype=np.int16)
+        samples = np.concatenate([gap(.3), tone, gap(3.0), tone, gap(.4), tone, gap(2.0)])
+        result = cap_pauses(samples[:, None], rate)
+        self.assertAlmostEqual(len(result) / rate, len(samples) / rate - 2.0, delta=.03)
+        self.assertTrue((result[:int(rate * .3)] == 0).all())  # leading silence untouched
+        self.assertTrue((result[-int(rate * 2.0):] == 0).all())  # trailing silence untouched
+        short = np.concatenate([tone, gap(.8), tone])
+        self.assertEqual(len(cap_pauses(short, rate)), len(short))
 
     def test_rejects_empty_stereo_nonfinite_and_excessive_audio(self):
         for samples in [np.array([]), np.zeros((20, 2)), np.array([np.nan]),
