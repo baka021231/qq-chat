@@ -41,6 +41,9 @@ class TurnRequest:
     on_activity: Callable[[dict], None] | None = None
     # Trusted per-turn context, separate from thread configuration/history.
     runtime_instructions: str = ''
+    # Host-executed tools; sandbox permissions remain independent of these capabilities.
+    dynamic_tools: tuple = ()
+    on_tool_call: Callable | None = None
 
 
 class Agent(ABC):

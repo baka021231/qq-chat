@@ -325,6 +325,10 @@ class Bridge(TaskCommands):
         return (getattr(self, 'voice', None) is not None
                 and (self.cfg.get('voice') or {}).get('mode', 'reply') == 'tool')
 
+    def group_speak_enabled(self, source):
+        return (source.kind == 'group' and self.speak_enabled()
+                and (self.cfg.get('voice') or {}).get('group_enabled', False) is True)
+
     async def enqueue_voice(self, source, reply):
         voice = getattr(self, 'voice', None)
         if voice is None or self.speak_enabled():
@@ -417,7 +421,12 @@ class Bridge(TaskCommands):
                 sections.append(name + '\n' + content)
                 logging.info('QQ workspace %s loaded for current turn', name)
         rules = '\n\n'.join(sections) if sections else None
-        return prompts.instructions(authorized, rules, group_moderation=group_moderation)
+        result = prompts.instructions(authorized, rules, group_moderation=group_moderation)
+        if not authorized and group_moderation and self.group_speak_enabled(Source('group', 0)):
+            result = result.replace("只陪对方文字聊天：不调用工具，不读取文件，不运行命令，不操作电脑，也不说自己做过这些。",
+                                    "可以文字聊天，也可以使用本轮提供的 speak 命令在当前群聊发语音，无需主人逐次确认。"
+                                    "只允许这项语音命令，不读取文件、不执行其他命令、不操作电脑。")
+        return result
 
     async def turn_request(self, source, authorized, text=''):
         selection = self.selection(source)
@@ -450,13 +459,22 @@ class Bridge(TaskCommands):
             request.instructions += memory_instructions
             request.runtime_instructions = ('以下记忆检索指令仅适用于当前轮，替代历史中的命令和路径。'
                                             + memory_instructions)
-        if authorized and memory_grant is not None and SPEAK in memory_grant.names:
-            command = shlex.join(['python3', '-I', str(BASE / 'tools' / 'speak.py'),
-                                  '--grant', memory_grant.config_path])
-            speak_instructions = ('\n本轮可调用 speak，用自己的声音说话。用终端执行以下命令，'
-                                  '把参数换成本次内容：\n'
-                                  + command + ' --style 日常 --intensity 中 --scene "想怎么说" --text "要说的话"\n'
-                                  + prompts.SPEAK_RULES + '授权文件仅本轮有效，不要复用历史轮次的 speak 命令。')
+        if (authorized or self.group_speak_enabled(source)) and memory_grant is not None and SPEAK in memory_grant.names:
+            if not authorized and profile.get('type') == 'codex_app':
+                request.dynamic_tools, request.on_tool_call = self.tool_server.native_binding(memory_grant)
+                speak_instructions = ('\n本轮可直接调用原生工具 speak，用自己的声音在当前群聊说话。'
+                                      '参数为 text、style、intensity 和可选 scene。'
+                                      '不要通过终端执行 speak.py，不要复用历史命令或授权路径。\n')
+            else:
+                command = shlex.join(['python3', '-I', str(BASE / 'tools' / 'speak.py'),
+                                      '--grant', memory_grant.config_path])
+                speak_instructions = ('\n本轮可调用 speak，用自己的声音说话。用终端执行以下命令，'
+                                      '把参数换成本次内容：\n'
+                                      + command + ' --style 日常 --intensity 中 --scene "想怎么说" --text "要说的话"\n')
+            speak_instructions += prompts.SPEAK_RULES + '授权仅本轮有效。'
+            if not authorized:
+                speak_instructions += ('主人已开放群聊语音；群友想听时直接调用本轮语音工具，无需逐次确认。'
+                                       '这是文字聊天限制的唯一例外；不允许其他命令、文件读取、私人记忆或后台任务。')
             request.instructions += speak_instructions
             request.runtime_instructions += '\n以下语音指令仅适用于当前轮。' + speak_instructions
         return request
@@ -636,7 +654,10 @@ class Bridge(TaskCommands):
                     self._front_grants.pop(self.conversation(source), None)
         names = [name for name, on in (('memory_search', self.cfg.get('memory', {}).get('enabled', True)),
                                        (SPEAK, self.speak_enabled())) if on]
-        if (owner_request(source, self.cfg['owner_qq']) and not config.get('back')
+        owner = owner_request(source, self.cfg['owner_qq'])
+        if not owner:
+            names = [SPEAK] if self.group_speak_enabled(source) else []
+        if ((owner and not config.get('back') or not owner and self.group_speak_enabled(source))
                 and names and server and server.server is not None):
             async with server.grant(source, names=names) as grant:
                 self._memory_grants[self.conversation(source)] = grant

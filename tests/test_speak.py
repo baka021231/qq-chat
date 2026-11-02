@@ -8,8 +8,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from qq_chat.agents.base import NONE
 from qq_chat import prompts
-from qq_chat.bridge import Bridge
+from qq_chat.bridge import Source, Bridge
 from qq_chat.memory_progress import SPEAK_SCRIPT, MemoryProgress, speak_command
 from qq_chat.voice import ProcessSynthesizer, VoiceReplies, speak_text
 import tests.test_front_tools as front_tests
@@ -172,6 +173,40 @@ class SpeakToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(server.grants)
         await self.bridge.chat(self.guest, '你好')
         self.assertNotIn('speak.py', self.front.requests[-1].instructions)
+        await self.bridge.voice.close()
+
+    async def test_group_guest_voice_is_scoped_and_revoked_when_disabled(self):
+        server = await self.setup_tools()
+        self.full_codex()
+        self.enable_voice()
+        self.cfg['voice']['group_enabled'] = True
+        guest = Source('group', 20001, 30001)
+        async with server.grant(guest, names=('speak',)) as grant:
+            token = self.token(grant)
+            self.assertEqual([x['name'] for x in await server.call(token, 'tools/list', {})], ['speak'])
+            await server.call(token, 'speak', {'text': LINE, 'style': '日常'})
+            for name in ('memory_search', 'dispatch_task', 'poke'):
+                with self.assertRaises(ValueError):
+                    await server.call(token, name, {})
+            self.cfg['voice']['group_enabled'] = False
+            with self.assertRaises(ValueError):
+                await server.call(token, 'speak', {'text': LINE, 'style': '日常'})
+        self.cfg['voice']['group_enabled'] = True
+        for names in (('memory_search',), ('speak', 'memory_search')):
+            with self.assertRaises(ValueError):
+                async with server.grant(guest, names=names): pass
+        with self.assertRaises(ValueError):
+            async with server.grant(Source('private', 30001, 30001), names=('speak',)): pass
+        await self.bridge.chat(guest, '说句话')
+        req = self.front.requests[-1]
+        self.assertEqual(req.level, NONE)
+        self.assertEqual([t['name'] for t in req.dynamic_tools], ['speak'])
+        self.assertNotIn('--grant', req.runtime_instructions)
+        self.assertNotIn('memory_search.py', req.runtime_instructions)
+        self.assertNotIn('只陪对方文字聊天：不调用工具', req.instructions)
+        await asyncio.wait_for(self.bridge.voice.queue.join(), 2)
+        self.assertEqual(self.audio, [guest])
+        self.assertFalse(server.grants)
         await self.bridge.voice.close()
 
     async def test_tool_mode_does_not_voice_every_reply(self):

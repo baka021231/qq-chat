@@ -1,7 +1,7 @@
 """Private per-turn capability channel; tools never select their own QQ source."""
 import asyncio
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import logging
 import os
@@ -22,6 +22,7 @@ SPEAK = 'speak'
 class ToolGrant:
     config_path: str
     names: frozenset = frozenset()
+    token: str = field(default='', repr=False)
 
 
 def tool_definitions(back):
@@ -64,6 +65,7 @@ class ToolServer:
         self.server = None
         self.grants = {}
         self.grant_names = {}
+        self.speech_counts = {}
         self.clients = set()
 
     async def start(self):
@@ -90,7 +92,9 @@ class ToolServer:
     @asynccontextmanager
     async def grant(self, source, *, names=NAMES):
         from .bridge import owner_request
-        if self.server is None or not owner_request(source, self.bridge.cfg['owner_qq']):
+        names = frozenset(names)
+        guest_voice = (self.bridge.group_speak_enabled(source) and names == {SPEAK})
+        if self.server is None or not (owner_request(source, self.bridge.cfg['owner_qq']) or guest_voice):
             raise ValueError('Front tools are unavailable for this source')
         names = frozenset(names)
         if not names or names - {*NAMES, SPEAK}:
@@ -106,11 +110,23 @@ class ToolServer:
             with os.fdopen(fd, 'w') as out:
                 os.fchmod(out.fileno(), 0o600)
                 json.dump(data, out)
-            yield ToolGrant(name, names)
+            yield ToolGrant(name, names, token)
         finally:
             self.grants.pop(token, None)
             self.grant_names.pop(token, None)
+            self.speech_counts.pop(token, None)
             Path(name).unlink(missing_ok=True)
+
+    def native_binding(self, grant):
+        """Bind the native transport to the same capability checks as the Unix entry."""
+        definitions = tuple({'type': 'function', **tool} for tool in
+                            tool_definitions(self.bridge.cfg.get('agents', {}).get('back', []))
+                            if tool['name'] in grant.names)
+
+        async def invoke(name, arguments):
+            return await self.call(grant.token, name, arguments)
+
+        return definitions, invoke
 
     async def _client(self, reader, writer):
         task = asyncio.current_task(); self.clients.add(task)
@@ -140,7 +156,10 @@ class ToolServer:
         if not bound or bound[2] <= time.monotonic():
             raise ValueError('工具授权已失效')
         source, conversation, _ = bound
-        if not owner_request(source, self.bridge.cfg['owner_qq']) or conversation != self.bridge.conversation(source):
+        guest_voice = (self.bridge.group_speak_enabled(source)
+                       and self.grant_names.get(token) == {SPEAK})
+        if (not (owner_request(source, self.bridge.cfg['owner_qq']) or guest_voice)
+                or conversation != self.bridge.conversation(source)):
             raise ValueError('工具仅限已核验主人当前会话')
         back = self.bridge.cfg.get('agents', {}).get('back', [])
         definitions = {t['name']: t for t in tool_definitions(back)
@@ -162,9 +181,15 @@ class ToolServer:
         if name == SPEAK:
             if not self.bridge.speak_enabled():
                 raise ValueError('语音工具未启用')
+            if self.bridge.blocked(source):
+                raise ValueError('当前发言者已被限制，语音没有发出')
+            if guest_voice and self.speech_counts.get(token, 0) >= 2:
+                raise ValueError('本轮群聊最多两段语音，请等待下一轮')
             if not self.bridge.voice.say(source, arguments['text'], arguments['style'],
                                          arguments.get('intensity', '中'), arguments.get('scene')):
                 raise ValueError('语音队列已满，本次没有发出语音')
+            if guest_voice:
+                self.speech_counts[token] = self.speech_counts.get(token, 0) + 1
             logging.info('Front tool completed name=speak source=%s', source.kind)
             return {'status': 'queued'}
         if name == 'memory_search':
@@ -213,6 +238,7 @@ class ToolServer:
     async def close(self):
         self.grants.clear()
         self.grant_names.clear()
+        self.speech_counts.clear()
         if self.server:
             self.server.close(); await self.server.wait_closed(); self.server = None
             if self.socket.exists() and self.socket.lstat().st_ino == self.socket_inode:

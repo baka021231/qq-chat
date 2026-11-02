@@ -1,5 +1,6 @@
 """Codex adapter preserving the bridge's existing thread and turn semantics."""
 import contextlib
+import json
 from pathlib import Path
 import time
 
@@ -18,6 +19,8 @@ class CodexAgent(Agent):
         self._models = {}
         self._efforts = {}
         self._task_sessions = {}
+        self.db.execute('CREATE TABLE IF NOT EXISTS codex_tool_sessions '
+                        '(thread_id TEXT PRIMARY KEY, tools_json TEXT NOT NULL)')
 
     async def start(self):
         await self.app.start()
@@ -47,7 +50,14 @@ class CodexAgent(Agent):
             if req.effort is not None:
                 options['config'] = {'model_reasoning_effort': req.effort}
         thread = self.session_id(req.key)
-        if thread:
+        tools_json = json.dumps(req.dynamic_tools, sort_keys=True)
+        registered = self.db.execute('SELECT tools_json FROM codex_tool_sessions WHERE thread_id=?',
+                                     (thread,)).fetchone() if thread and req.dynamic_tools else None
+        # Tools can only be registered at thread/start in this protocol. Archive
+        # the old binding after creation; Bridge imports bounded chat history.
+        migrate_tools = bool(thread and req.dynamic_tools and
+                             (registered is None or registered[0] != tools_json))
+        if thread and not migrate_tools:
             try:
                 result = await self.app.call('thread/resume', {'threadId': thread, **options})
             except RuntimeError as error:
@@ -59,8 +69,14 @@ class CodexAgent(Agent):
                 self._models[thread] = result.get('model')
                 self._efforts[thread] = result.get('reasoningEffort')
                 return thread
+        if req.dynamic_tools:
+            options['dynamicTools'] = list(req.dynamic_tools)
         result = await self.app.call('thread/start', {**options, 'ephemeral': False})
+        if migrate_tools:
+            await self.reset(req.key)
         thread = result['thread']['id']
+        if req.dynamic_tools:
+            self.db.execute('INSERT INTO codex_tool_sessions VALUES (?, ?)', (thread, tools_json))
         if req.role == TASK:
             self._task_sessions[req.key] = thread
         elif self.legacy:
@@ -88,6 +104,8 @@ class CodexAgent(Agent):
             options['on_started'] = req.on_runtime
         if req.on_activity is not None:
             options['on_activity'] = req.on_activity
+        if req.on_tool_call is not None:
+            options['on_tool_call'] = req.on_tool_call
         reply = await self.app.turn(thread, req.text, on_progress=req.on_progress,
                                     on_answer=req.on_answer, show_tools=req.show_tools,
                                     image_paths=req.images, **options)

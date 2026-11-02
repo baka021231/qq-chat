@@ -48,7 +48,7 @@ class AppServer:
                                          close_timeout=2, max_size=8*1024*1024, proxy=None)
             self.reader = asyncio.create_task(self.read())
             try:
-                await self.call('initialize', {'clientInfo': {'name': 'qq_bridge', 'version': '2.1'}, 'capabilities': {'experimentalApi': False}})
+                await self.call('initialize', {'clientInfo': {'name': 'qq_bridge', 'version': '2.1'}, 'capabilities': {'experimentalApi': True}})
                 await self.write({'method': 'initialized'})
             except BaseException:
                 await self.close()
@@ -74,6 +74,14 @@ class AppServer:
                 msg = json.loads(line)
                 if 'method' in msg:
                     if 'id' in msg:
+                        if msg['method'] == 'item/tool/call':
+                            thread = msg.get('params', {}).get('threadId')
+                            if thread in self.events:
+                                self.events[thread].put_nowait(msg)
+                            else:
+                                await self.write({'id': msg['id'], 'result': tool_output(
+                                    False, '当前会话没有有效工具授权')})
+                            continue
                         # Never silently approve unexpected interactive requests.
                         await self.write({'id': msg['id'], 'error': {'code': -32601, 'message': 'QQ bridge does not support interactive approval; use the terminal'}})
                         continue
@@ -100,7 +108,7 @@ class AppServer:
             for q in self.events.values():
                 q.put_nowait({'method': 'disconnected'})
 
-    async def turn(self, thread, text, on_progress=None, on_answer=None, show_tools=False, image_paths=(), model=None, effort=None, on_started=None, on_activity=None):
+    async def turn(self, thread, text, on_progress=None, on_answer=None, show_tools=False, image_paths=(), model=None, effort=None, on_started=None, on_activity=None, on_tool_call=None):
         q = asyncio.Queue()
         self.events[thread] = q
         turn_id = None
@@ -119,6 +127,7 @@ class AppServer:
             if on_started:
                 on_started({'thread_id': thread, 'turn_id': turn_id})
             messages = {}
+            tool_results = {}
             phases, streamed = {}, {}
             async with asyncio.timeout(3600):
                 while True:
@@ -126,6 +135,12 @@ class AppServer:
                     method, params = event['method'], event.get('params', {})
                     if method == 'disconnected':
                         raise ExecutionUncertain('App Server disconnected during turn')
+                    if method == 'item/tool/call':
+                        # Keep host work out of the shared RPC reader so that
+                        # other conversations and RPC responses can progress.
+                        output = await self.tool_call(params, thread, turn_id, on_tool_call, tool_results)
+                        await self.write({'id': event['id'], 'result': output})
+                        continue
                     if on_activity and method in ('item/started', 'item/completed'):
                         on_activity(params.get('item', {}))
                     if on_progress:
@@ -174,6 +189,27 @@ class AppServer:
             self.events.pop(thread, None)
             self.active_turns.pop(thread, None)
 
+    async def tool_call(self, params, thread, turn_id, handler, results):
+        if (handler is None or params.get('threadId') != thread or params.get('turnId') != turn_id
+                or params.get('namespace') is not None or not isinstance(params.get('callId'), str)
+                or not params['callId']):
+            return tool_output(False, '当前轮次没有有效工具授权')
+        call_id = params['callId']
+        signature = (params.get('tool'), params.get('arguments'))
+        if call_id in results:
+            previous, output = results[call_id]
+            return output if signature == previous else tool_output(False, '重复调用编号的参数不一致')
+        try:
+            value = await handler(*signature)
+            output = tool_output(True, json.dumps(value, ensure_ascii=False))
+        except ValueError as error:
+            output = tool_output(False, str(error))
+        except Exception:
+            logging.warning('Native tool invocation failed')
+            output = tool_output(False, '工具调用失败，请稍后重试')
+        results[call_id] = (signature, output)
+        return output
+
     async def interrupt(self, thread):
         turn = self.active_turns.get(thread)
         if turn is None:
@@ -190,6 +226,10 @@ class AppServer:
             await self.reader
         self.ws = None
         self.reader = None
+
+
+def tool_output(success, text):
+    return {'success': success, 'contentItems': [{'type': 'inputText', 'text': text}]}
 
 
 def command_summary(command):
