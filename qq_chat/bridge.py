@@ -816,6 +816,9 @@ class Bridge(TaskCommands):
 
     async def session(self, ws):
         self.ws = ws
+        if self.voice is not None and (self.cfg.get('voice') or {}).get('preload', True):
+            # Disconnects kill the speech process, so load it again on every connection.
+            self.voice.warm()
         worker = asyncio.create_task(self.worker())
         controls = set()
         reports = asyncio.create_task(self.flush_task_reports()) if hasattr(self, 'tasks') else None

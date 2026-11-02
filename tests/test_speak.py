@@ -216,3 +216,87 @@ class SpeakConfigTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class WarmupTests(unittest.IsolatedAsyncioTestCase):
+    def backend(self, warm_reply, timeout=5):
+        encoded = __import__('base64').b64encode(wav_bytes()).decode()
+        script = ('import sys,json\n'
+                  'for line in sys.stdin:\n'
+                  ' request=json.loads(line)\n'
+                  ' if request.get("warmup"):\n'
+                  f'  reply={warm_reply!r}\n'
+                  '  if reply is None: continue\n'
+                  '  print(reply,flush=True); continue\n'
+                  f' print(json.dumps({{"wav": {encoded!r}}}),flush=True)\n')
+        return ProcessSynthesizer([sys.executable, '-u', '-c', script], timeout=timeout)
+
+    async def test_ready_unsupported_and_silent_backends(self):
+        ready = self.backend('{"ready": true}')
+        try:
+            self.assertTrue(await ready.warm())
+            process = ready.process
+            self.assertEqual(await ready.synthesize(LINE), wav_bytes())
+            self.assertIs(ready.process, process)  # the warmed process serves the first line
+        finally:
+            await ready.close()
+        legacy = self.backend('{"error": "synthesis_failed"}')
+        try:
+            self.assertFalse(await legacy.warm())
+            self.assertIsNotNone(legacy.process)  # answered, so it stays up
+            self.assertEqual(await legacy.synthesize(LINE), wav_bytes())
+        finally:
+            await legacy.close()
+        silent = self.backend(None, timeout=0.5)
+        with self.assertLogs(level='WARNING'):
+            self.assertFalse(await silent.warm())
+        self.assertIsNone(silent.process)
+
+    async def test_close_cancels_pending_warmup(self):
+        started = asyncio.Event()
+
+        class Synth:
+            async def warm(self):
+                started.set()
+                await asyncio.sleep(60)
+
+            async def close(self):
+                self.closed = True
+
+        async def send(source, value): pass
+        synth = Synth()
+        worker = VoiceReplies(synth, send, send, lambda source: False)
+        worker.warm()
+        first = worker.warming
+        worker.warm()
+        self.assertIs(worker.warming, first)  # no second load while one is running
+        await asyncio.wait_for(started.wait(), 1)
+        await worker.close()
+        self.assertTrue(first.cancelled())
+        self.assertTrue(synth.closed)
+
+    async def test_each_connection_warms_unless_disabled(self):
+        with tempfile.TemporaryDirectory() as directory, patch('qq_chat.bridge.BASE', Path(directory)):
+            bridge = Bridge({'owner_qq': 1, 'codex_path': 'unused'})
+            calls = []
+
+            class Voice:
+                def warm(self): calls.append('warm')
+                async def close(self): calls.append('close')
+
+            class Socket:
+                def __aiter__(self): return self
+                async def __anext__(self): raise StopAsyncIteration
+
+            async def idle(): await asyncio.sleep(60)
+            bridge.voice, bridge.worker = Voice(), idle
+            try:
+                await bridge.session(Socket())
+                await bridge.session(Socket())
+                self.assertEqual(calls, ['warm', 'close', 'warm', 'close'])
+                bridge.cfg['voice'] = {'preload': False}
+                calls.clear()
+                await bridge.session(Socket())
+                self.assertEqual(calls, ['close'])
+            finally:
+                bridge.db.close()

@@ -101,6 +101,34 @@ class ProcessSynthesizer:
                 await self.close()
                 raise
 
+    async def warm(self):
+        """Start the backend and load its model ahead of the first line. Never raises.
+
+        A backend that answers but does not know warm-up (ONNX loads at start
+        anyway) stays running; only a dead or silent one is shut down.
+        """
+        async with self.lock:
+            try:
+                async with asyncio.timeout(self.timeout):
+                    if self.process is None or self.process.returncode is not None:
+                        self.process = await asyncio.create_subprocess_exec(
+                            *self.command, stdin=asyncio.subprocess.PIPE,
+                            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                            limit=MAX_AUDIO_BYTES * 2)
+                    self.process.stdin.write(b'{"warmup": true}\n')
+                    await self.process.stdin.drain()
+                    line = await self.process.stdout.readline()
+                    if not line:
+                        raise EOFError('Speech backend exited')
+                    return json.loads(line).get('ready') is True
+            except asyncio.CancelledError:
+                await self.close()
+                raise
+            except Exception as error:
+                logging.warning('Voice warm-up failed (%s)', type(error).__name__)
+                await self.close()
+                return False
+
     async def close(self):
         process, self.process = self.process, None
         if process is not None:
@@ -117,6 +145,13 @@ class VoiceReplies:
         self.send_audio, self.send_notice, self.blocked = send_audio, send_notice, blocked
         self.queue = asyncio.Queue(maxsize=capacity)
         self.task = None
+        self.warming = None
+
+    def warm(self):
+        """Load the model in the background; lines queued meanwhile wait for it."""
+        warm = getattr(self.synthesizer, 'warm', None)
+        if warm is not None and (self.warming is None or self.warming.done()):
+            self.warming = asyncio.create_task(warm())
 
     def submit(self, source, reply):
         text = speech_text(reply)
@@ -169,6 +204,11 @@ class VoiceReplies:
                 self.queue.task_done()
 
     async def close(self):
+        if self.warming:
+            self.warming.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.warming
+            self.warming = None
         if self.task:
             self.task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

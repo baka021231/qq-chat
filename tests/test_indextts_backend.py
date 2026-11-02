@@ -85,6 +85,24 @@ class IndexProtocolTests(unittest.TestCase):
         for result in [results[0], results[2]]:
             validate_wav(base64.b64decode(result['wav'], validate=True))
 
+    def test_warmup_loads_once_and_serves_following_requests(self):
+        created = []
+        class Engine:
+            def synthesize(self, text, seed, style, intensity, scene):
+                return audio_bytes(), {}
+        def factory():
+            created.append(True)
+            return Engine()
+        output = io.StringIO()
+        lines = ['{"warmup": true}', '{"warmup": true}', '{"text": "你好"}', '{"warmup": false}']
+        with contextlib.redirect_stderr(io.StringIO()):
+            serve(io.StringIO('\n'.join(lines)), output, factory)
+        replies = [json.loads(l) for l in output.getvalue().splitlines()]
+        self.assertEqual(created, [True])
+        self.assertEqual(replies[:2], [{'ready': True}] * 2)
+        self.assertIn('wav', replies[2])
+        self.assertEqual(replies[3], {'error': 'synthesis_failed'})
+
     def test_rejects_invalid_audio_before_delivery(self):
         class Engine:
             def synthesize(self, text, seed, style, intensity, scene):
