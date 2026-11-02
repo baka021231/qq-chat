@@ -163,6 +163,12 @@ Codex 最终文字 → 原有审核和文字发送 → VoiceReplies 有界队列
 
 ## 群聊原生语音工具
 
+若希望群聊默认只发语音，设置 `voice.group_voice_only=true`（默认 `false`）。
+桥接会将群聊最终回复统一放入语音队列，不发送对应文字或群内流式文字；
+合成或 QQ 音频发送失败时，向原群发送原回复文字，队列满时直接发送原文。
+私聊与管理命令仍沿用原路径。此模式不向当前群聊发放 `speak` 能力，
+避免主动语音与自动语音重复；`group_enabled` 只控制下述主动工具模式。
+
 工具模式下，`voice.group_enabled=true` 为群聊访客开放唯一的 `speak` 能力。
 Codex 通过 App Server 的 `dynamicTools` / `item/tool/call` 调用桥接；访客保持
 `read-only` 沙箱和禁网，不再执行 `tools/speak.py`。主人原有终端入口不变。

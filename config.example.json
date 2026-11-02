@@ -12,6 +12,8 @@
   "voice": {
     "enabled": false,
     "mode": "reply",
+    "group_enabled": false,
+    "group_voice_only": false,
     "preload": true,
     "timeout_seconds": 120,
     "command": [

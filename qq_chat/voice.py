@@ -159,6 +159,15 @@ class VoiceReplies:
             return True
         return self._enqueue(source, text, {})
 
+    def submit_only(self, source, reply):
+        """Queue a reply whose original text is sent only if speech fails."""
+        if self.blocked(source):
+            return True
+        text = speech_text(reply)
+        if not text:
+            return False
+        return self._enqueue(source, text, {}, fallback=reply)
+
     def say(self, source, text, style, intensity, scene=None):
         """Queue one line chosen by the agent; raises ValueError for the model to correct.
 
@@ -174,9 +183,9 @@ class VoiceReplies:
             return True
         return self._enqueue(source, text, options)
 
-    def _enqueue(self, source, text, options):
+    def _enqueue(self, source, text, options, fallback=None):
         try:
-            self.queue.put_nowait((source, text, options))
+            self.queue.put_nowait((source, text, options, fallback))
         except asyncio.QueueFull:
             return False
         if self.task is None or self.task.done():
@@ -185,7 +194,7 @@ class VoiceReplies:
 
     async def run(self):
         while True:
-            source, text, options = await self.queue.get()
+            source, text, options, fallback = await self.queue.get()
             try:
                 for chunk in speech_chunks(text):
                     if self.blocked(source):
@@ -199,7 +208,8 @@ class VoiceReplies:
                 logging.warning('Voice reply failed (%s); text retained', type(error).__name__)
                 if not self.blocked(source):
                     with contextlib.suppress(Exception):
-                        await self.send_notice(source, '本次语音未能完成，文字回复已保留。')
+                        await self.send_notice(source, fallback if fallback is not None
+                                               else '本次语音未能完成，文字回复已保留。')
             finally:
                 self.queue.task_done()
 

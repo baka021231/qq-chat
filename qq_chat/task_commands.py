@@ -73,9 +73,13 @@ class TaskCommands:
                 await self.send(source, '前台停止尚未确认，仍在等待执行端；当前会话轮次尚未释放。')
 
     async def deliver(self, source, text, user_text, *, streamed=False):
-        if not streamed:
-            await self.send(source, text)
-        await self.enqueue_voice(source, text)
+        if self.group_voice_only(source):
+            if not self.voice.submit_only(source, text):
+                await self.send(source, text)
+        else:
+            if not streamed:
+                await self.send(source, text)
+            await self.enqueue_voice(source, text)
         key = self.conversation(source)
         saved = self.__dict__.setdefault('_history_replies', {}).pop(key, text)
         self.db.executemany('INSERT INTO history(role,content,conversation) VALUES(?,?,?)',

@@ -327,7 +327,12 @@ class Bridge(TaskCommands):
 
     def group_speak_enabled(self, source):
         return (source.kind == 'group' and self.speak_enabled()
+                and not self.group_voice_only(source)
                 and (self.cfg.get('voice') or {}).get('group_enabled', False) is True)
+
+    def group_voice_only(self, source):
+        return (source.kind == 'group' and getattr(self, 'voice', None) is not None
+                and (self.cfg.get('voice') or {}).get('group_voice_only', False) is True)
 
     async def enqueue_voice(self, source, reply):
         voice = getattr(self, 'voice', None)
@@ -459,7 +464,8 @@ class Bridge(TaskCommands):
             request.instructions += memory_instructions
             request.runtime_instructions = ('以下记忆检索指令仅适用于当前轮，替代历史中的命令和路径。'
                                             + memory_instructions)
-        if (authorized or self.group_speak_enabled(source)) and memory_grant is not None and SPEAK in memory_grant.names:
+        if (not self.group_voice_only(source) and (authorized or self.group_speak_enabled(source))
+                and memory_grant is not None and SPEAK in memory_grant.names):
             if not authorized and profile.get('type') == 'codex_app':
                 request.dynamic_tools, request.on_tool_call = self.tool_server.native_binding(memory_grant)
                 speak_instructions = ('\n本轮可直接调用原生工具 speak，用自己的声音在当前群聊说话。'
@@ -477,6 +483,11 @@ class Bridge(TaskCommands):
                                        '这是文字聊天限制的唯一例外；不允许其他命令、文件读取、私人记忆或后台任务。')
             request.instructions += speak_instructions
             request.runtime_instructions += '\n以下语音指令仅适用于当前轮。' + speak_instructions
+        if self.group_voice_only(source):
+            request.runtime_instructions += ('\n当前群聊使用自动语音回复：直接输出自然简短的回复正文，'
+                                             '程序会合成并发送语音，失败时发送原文。'
+                                             '本轮不提供 speak 工具，不要调用历史 speak 工具或终端语音命令，'
+                                             '不要另写“已排队”之类的语音发送说明。')
         return request
 
     async def thread_for(self, source, authorized):
@@ -595,8 +606,9 @@ class Bridge(TaskCommands):
             if delta:
                 answer_queue.put_nowait(delta)
 
-        reporter = asyncio.create_task(self.relay_progress(source, progress_queue)) if authorized else None
-        answer_sender = asyncio.create_task(self.relay_answer(source, answer_queue)) if authorized else None
+        stream_text = authorized and not self.group_voice_only(source)
+        reporter = asyncio.create_task(self.relay_progress(source, progress_queue)) if stream_text else None
+        answer_sender = asyncio.create_task(self.relay_answer(source, answer_queue)) if stream_text else None
         selection = self.selection(source)
         if request is None:
             request = await self.turn_request(source, authorized, text)
@@ -604,15 +616,15 @@ class Bridge(TaskCommands):
         profile = getattr(self.agent_for(source), 'profile', {})
         request.model = selection[0] if selection else profile.get('model')
         request.effort = selection[1] if selection else profile.get('effort')
-        if (authorized and profile.get('type') == 'codex_app'
+        if (stream_text and profile.get('type') == 'codex_app'
                 and self.__dict__.get('_memory_grants', {}).get(request.key) is not None):
             from .memory_progress import MemoryProgress
             quiet_memory = MemoryProgress(progress)
             request.on_progress = quiet_memory.progress
             request.on_activity = quiet_memory.activity
         else:
-            request.on_progress = progress if authorized else None
-        request.on_answer = answer_delta if authorized else None
+            request.on_progress = progress if stream_text else None
+        request.on_answer = answer_delta if stream_text else None
         request.show_tools = bool(self.cfg.get('show_tool_progress', False))
         request.images = tuple(image_paths)
         try:
@@ -655,6 +667,8 @@ class Bridge(TaskCommands):
         names = [name for name, on in (('memory_search', self.cfg.get('memory', {}).get('enabled', True)),
                                        (SPEAK, self.speak_enabled())) if on]
         owner = owner_request(source, self.cfg['owner_qq'])
+        if self.group_voice_only(source):
+            names = [name for name in names if name != SPEAK]
         if not owner:
             names = [SPEAK] if self.group_speak_enabled(source) else []
         if ((owner and not config.get('back') or not owner and self.group_speak_enabled(source))
@@ -692,7 +706,7 @@ class Bridge(TaskCommands):
         self.db.commit()
         if authorized and request.history_text is not None:
             self._history_replies[key] = request.history_text
-        return reply, authorized
+        return reply, authorized and not self.group_voice_only(source)
 
     async def front_command(self, source, text):
         await switch_front_command(self, source, text, BASE,
