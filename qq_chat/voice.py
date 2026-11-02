@@ -19,6 +19,7 @@ STYLES = ('日常', '开心', '安慰', '激动', '压着怒气', '哽咽')
 INTENSITIES = ('低', '中', '高')
 SPEAK_MIN_CHARS = 6
 SPEAK_MAX_CHARS = 140
+SCENE_MAX_CHARS = 60
 
 
 def speech_text(text):
@@ -123,12 +124,20 @@ class VoiceReplies:
             return True
         return self._enqueue(source, text, {})
 
-    def say(self, source, text, style, intensity):
-        """Queue one line chosen by the agent; raises ValueError for the model to correct."""
+    def say(self, source, text, style, intensity, scene=None):
+        """Queue one line chosen by the agent; raises ValueError for the model to correct.
+
+        scene describes how to say it; backends with a clip library match it, others ignore it.
+        """
         text = speak_text(text, style, intensity)
+        options = {'style': style, 'intensity': intensity}
+        if scene is not None:
+            if not isinstance(scene, str) or not scene.strip() or len(scene) > SCENE_MAX_CHARS:
+                raise ValueError(f'scene 应为 1～{SCENE_MAX_CHARS} 字，一句话说明想怎么说')
+            options['scene'] = scene.strip()
         if self.blocked(source):
             return True
-        return self._enqueue(source, text, {'style': style, 'intensity': intensity})
+        return self._enqueue(source, text, options)
 
     def _enqueue(self, source, text, options):
         try:

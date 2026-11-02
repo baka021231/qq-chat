@@ -6,7 +6,10 @@ from pathlib import Path
 import unittest
 import wave
 
-from tools.indextts_backend import PRESETS, cap_pauses, emotion_vector, pcm_wav, serve, validate_request
+from tools.indextts_backend import (PRESETS, SceneLibrary, cap_pauses, emotion_vector, pcm_wav, serve,
+                                    validate_request)
+import json as _json
+import tempfile
 from qq_chat.voice import validate_wav
 
 try:
@@ -30,7 +33,8 @@ class IndexProtocolTests(unittest.TestCase):
                    {'text': '你好', 'seed': True}, {'text': '你好', 'seed': -1},
                    {'text': '你好', 'seed': 2 ** 32}, {'text': '你好', 'speaker': '/tmp/a.wav'},
                    {'text': '你好', 'style': '愤怒'}, {'text': '你好', 'intensity': '极高'},
-                   {'text': '你好', 'style': '/tmp/a.wav'}]
+                   {'text': '你好', 'style': '/tmp/a.wav'}, {'text': '你好', 'scene': ''},
+                   {'text': '你好', 'scene': 'x' * 61}, {'text': '你好', 'scene': ['哄睡']}]
         def factory():
             self.fail('Invalid input attempted to load model')
         output = io.StringIO()
@@ -38,9 +42,9 @@ class IndexProtocolTests(unittest.TestCase):
             serve(io.StringIO('\n'.join(json.dumps(r) for r in invalid)), output, factory)
         self.assertEqual([json.loads(l) for l in output.getvalue().splitlines()],
                          [{'error': 'synthesis_failed'}] * len(invalid))
-        self.assertEqual(validate_request({'text': '你好'}), ('你好', 42, '日常', '中'))
-        self.assertEqual(validate_request({'text': '你好', 'style': '开心', 'intensity': '高'}),
-                         ('你好', 42, '开心', '高'))
+        self.assertEqual(validate_request({'text': '你好'}), ('你好', 42, '日常', '中', None))
+        self.assertEqual(validate_request({'text': '你好', 'style': '开心', 'intensity': '高', 'scene': '哄睡'}),
+                         ('你好', 42, '开心', '高', '哄睡'))
 
     def test_styles_map_to_fixed_references_and_scaled_vectors(self):
         for preset in PRESETS.values():
@@ -57,7 +61,7 @@ class IndexProtocolTests(unittest.TestCase):
     def test_persistence_diagnostics_and_failure_recovery(self):
         created, calls = [], []
         class Engine:
-            def synthesize(self, text, seed, style, intensity):
+            def synthesize(self, text, seed, style, intensity, scene):
                 calls.append((text, seed, style))
                 print('Engine diagnostic')
                 if text == '失败':
@@ -83,7 +87,7 @@ class IndexProtocolTests(unittest.TestCase):
 
     def test_rejects_invalid_audio_before_delivery(self):
         class Engine:
-            def synthesize(self, text, seed, style, intensity):
+            def synthesize(self, text, seed, style, intensity, scene):
                 return b'broken audio', {}
         output = io.StringIO()
         with contextlib.redirect_stderr(io.StringIO()):
@@ -116,6 +120,28 @@ class IndexAudioTests(unittest.TestCase):
         self.assertTrue((result[-int(rate * 2.0):] == 0).all())  # trailing silence untouched
         short = np.concatenate([tone, gap(.8), tone])
         self.assertEqual(len(cap_pauses(short, rate)), len(short))
+
+    def test_scene_library_picks_usable_matches_and_falls_back(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / 'wav').mkdir()
+            ids = ['zh_vo_A_1', 'zh_vo_A_2', 'zh_vo_A_3', 'zh_vo_A_4', '../escape']
+            for ident in ids[:4]:
+                (root / 'wav' / (ident + '.wav')).write_bytes(b'')
+            entries = [dict(id=i, restricted=(i == 'zh_vo_A_3')) for i in ids]
+            (root / 'index.json').write_text(_json.dumps(entries))
+            axes = np.eye(5, dtype=np.float32)
+            np.savez(root / 'index.npz', note=axes, line=axes)
+            (root / 'qc.json').write_text(_json.dumps({'passed': ['zh_vo_A_1', 'zh_vo_A_3', '../escape']}))
+            vectors = {'哄睡': axes[0], '冷笑': axes[2], '无关': axes[1] * 0, '台词': axes[0]}
+            library = SceneLibrary(root, lambda texts: np.stack([vectors[t] for t in texts]))
+            self.assertEqual(library.ids, ['zh_vo_A_1'])  # failed QC, restricted and unsafe ids excluded
+            path, ident, score = library.pick('哄睡', '台词')
+            self.assertEqual((path.name, ident, score), ('zh_vo_A_1.wav', 'zh_vo_A_1', 1.0))
+            self.assertEqual(library.pick('冷笑', '无关')[:2], (None, None))
+            log = [_json.loads(l) for l in (root / 'usage.jsonl').read_text().splitlines()]
+            self.assertEqual([r['reference'] for r in log], ['zh_vo_A_1', None])
+            self.assertTrue(all(set(r) == {'time', 'reference', 'score'} for r in log))
 
     def test_rejects_empty_stereo_nonfinite_and_excessive_audio(self):
         for samples in [np.array([]), np.zeros((20, 2)), np.array([np.nan]),

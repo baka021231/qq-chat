@@ -27,9 +27,11 @@ def speak_command(command):
         args = shlex.split(command)
         if len(args) == 3 and Path(args[0]).name in ('bash', 'sh') and args[1] in ('-lc', '-c'):
             args = shlex.split(args[2])
-        return (len(args) == 11 and Path(args[0]).name in ('python', 'python3')
+        flags = (['--grant', '--style', '--intensity', '--text'],
+                 ['--grant', '--style', '--intensity', '--scene', '--text'])
+        return (len(args) in (11, 13) and Path(args[0]).name in ('python', 'python3')
                 and args[1] == '-I' and args[2] == str(SPEAK_SCRIPT)
-                and args[3::2] == ['--grant', '--style', '--intensity', '--text'] and all(args[4::2]))
+                and args[3::2] in flags and all(args[4::2]))
     except (TypeError, ValueError):
         return False
 

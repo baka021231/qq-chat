@@ -220,7 +220,7 @@ Grok 续接时会缓存首次系统规则，单纯更换 --agent 文件未能刷
 
 - `history` 与 `group_context` 是聊天续接/参考；`memory` 是独立本地文件，聊天history不会自动变成记忆。日记和详细日志直接写入 memory/private/diary，查询直接搜索 memory，不复制或刷新副本。
 - `ToolServer.call` 按真实 Source 决定 root 下的 shared/private/当前群目录，模型只能传 query。memory-only 授权的 tools/list 也只含 memory_search，不能借它派单或拍一拍。
-- `tools/speak.py` 与 memory_search 同构，只传 text/style/intensity。`ToolServer.call` 用绑定的 Source 调 `VoiceReplies.say`，模型不能指定目标；校验错误原样返回给模型以便改写重试。风格名在 `voice.STYLES`，对应的参考音频与情绪向量只在 `tools/indextts_backend.py` 的 PRESETS，协议不接受路径。`memory_progress.speak_command` 识别本轮下发的 speak 命令形状，与记忆检索一样不放出进度。
+- `tools/speak.py` 与 memory_search 同构，只传 text/style/intensity 和可选的 scene。scene 原样交给语音后端；IndexTTS 后端的 `SceneLibrary` 只从原声库中通过质检、非受限、编号合法的原声里选，协议不接受路径。`ToolServer.call` 用绑定的 Source 调 `VoiceReplies.say`，模型不能指定目标；校验错误原样返回给模型以便改写重试。风格名在 `voice.STYLES`，对应的参考音频与情绪向量只在 `tools/indextts_backend.py` 的 PRESETS，协议不接受路径。`memory_progress.speak_command` 识别本轮下发的 speak 命令形状，与记忆检索一样不放出进度。
 - `tools/memory_search.py` 只读取本轮 grant 并请求 Unix 服务；token 不进入 argv、日志或返回值，轮次结束撤销并删除授权文件。Codex 在 turn/start 前用 thread/inject_items 注入当前轮记忆命令，避免已加载线程恢复时沿用旧授权路径；注入失败不开始该轮。FULL 仍保留其他文件工具，不能将此范围检查说成系统沙箱。
 - `memory.search` 以目录描述符逐层打开，NOFOLLOW 并排除硬链接/特殊文件；每文件最多3个不同片段，含有限相邻上下文，同分时正文优先于Markdown标题；最多5条、单条500字、正文共2000字。关键词检索不等于语义检索，扫描预算与 partial 语义见 MEMORY.md。
 - Codex 主人单 agent 有 memory grant 时，Bridge.run_turn 安装 MemoryProgress；AppServer 在转发进度前传递真实 item 活动事件。纯记忆调用丢弃缓冲，其他或未知工具释放缓冲；最终回答、失败和停止不经过该过滤。

@@ -25,7 +25,7 @@ class ToolGrant:
 
 
 def tool_definitions(back):
-    from .voice import INTENSITIES, SPEAK_MAX_CHARS, STYLES
+    from .voice import INTENSITIES, SCENE_MAX_CHARS, SPEAK_MAX_CHARS, STYLES
 
     def obj(properties, required=()):
         return {'type': 'object', 'properties': properties, 'required': list(required), 'additionalProperties': False}
@@ -49,7 +49,8 @@ def tool_definitions(back):
         'memory_search': obj({'query': {'type': 'string', 'minLength': 1, 'maxLength': 200}}, ('query',)),
         SPEAK: obj({'text': {'type': 'string', 'minLength': 1, 'maxLength': SPEAK_MAX_CHARS},
                     'style': {'type': 'string', 'enum': list(STYLES)},
-                    'intensity': {'type': 'string', 'enum': list(INTENSITIES)}}, ('text', 'style')),
+                    'intensity': {'type': 'string', 'enum': list(INTENSITIES)},
+                    'scene': {'type': 'string', 'minLength': 1, 'maxLength': SCENE_MAX_CHARS}}, ('text', 'style')),
     }
     return [{'name': name, 'description': descriptions[name], 'inputSchema': schemas[name]}
             for name in (*NAMES, SPEAK)]
@@ -162,7 +163,7 @@ class ToolServer:
             if not self.bridge.speak_enabled():
                 raise ValueError('语音工具未启用')
             if not self.bridge.voice.say(source, arguments['text'], arguments['style'],
-                                         arguments.get('intensity', '中')):
+                                         arguments.get('intensity', '中'), arguments.get('scene')):
                 raise ValueError('语音队列已满，本次没有发出语音')
             logging.info('Front tool completed name=speak source=%s', source.kind)
             return {'status': 'queued'}
