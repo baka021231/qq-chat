@@ -317,7 +317,16 @@ def serve(source, output, factory):
     engine = None
     for line in source:
         try:
-            text, seed, style, intensity, scene = validate_request(json.loads(line))
+            request = json.loads(line)
+            if request == {'warmup': True}:
+                with contextlib.redirect_stdout(sys.stderr):
+                    if engine is None:
+                        engine = factory()
+                response = {'ready': True}
+                output.write(json.dumps(response) + '\n')
+                output.flush()
+                continue
+            text, seed, style, intensity, scene = validate_request(request)
             with contextlib.redirect_stdout(sys.stderr):
                 if engine is None:
                     engine = factory()
