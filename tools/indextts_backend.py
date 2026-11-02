@@ -145,7 +145,9 @@ class SceneLibrary:
     hers, unsure speaker) and failed ones are never chosen.
     """
     NOTE_WEIGHT = 0.75  # how she says it matters more than what was said
-    THRESHOLD = 0.6     # below this the requested style is used instead
+    # Imitate the closest clip even when none fits closely: the owner preferred that
+    # to falling back to a preset. Only nonsense scenes fall back to the style.
+    THRESHOLD = 0.45
     CLIP_ID = re.compile(r'^zh_vo_[A-Za-z0-9_]+$')
 
     def __init__(self, folder, embed):
