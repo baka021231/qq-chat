@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--grant', required=True)
     parser.add_argument('--style', required=True)
     parser.add_argument('--intensity', required=True)
+    parser.add_argument('--scene')
     parser.add_argument('--text', required=True)
     args = parser.parse_args()
     try:
@@ -31,8 +32,10 @@ def main():
         with socket.socket(socket.AF_UNIX) as conn:
             conn.settimeout(30)
             conn.connect(socket_path)
-            req = {'token': token, 'name': 'speak', 'arguments': {
-                'text': args.text, 'style': args.style, 'intensity': args.intensity}}
+            arguments = {'text': args.text, 'style': args.style, 'intensity': args.intensity}
+            if args.scene is not None:
+                arguments['scene'] = args.scene
+            req = {'token': token, 'name': 'speak', 'arguments': arguments}
             conn.sendall((json.dumps(req, ensure_ascii=False) + '\n').encode())
             with conn.makefile('rb') as stream:
                 raw = stream.readline(65537)

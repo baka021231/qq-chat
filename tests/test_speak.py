@@ -51,6 +51,8 @@ class SpeakQueueTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await worker.close()
         self.assertEqual(calls, [(LINE, {'style': '开心', 'intensity': '高'}), ('普通回复内容', {})])
+        with self.assertRaisesRegex(ValueError, 'scene'):
+            worker.say('owner', LINE, '开心', '中', 'x' * 61)
         self.assertEqual(sent, ['owner', 'owner'])
 
     async def test_process_protocol_omits_style_for_text_only_backends(self):
@@ -118,9 +120,11 @@ class SpeakToolTests(unittest.IsolatedAsyncioTestCase):
                     await server.call(token, 'speak', arguments)
             self.assertEqual(await server.call(token, 'speak', {'text': LINE, 'style': '开心'}),
                              {'status': 'queued'})
+            await server.call(token, 'speak', {'text': LINE, 'style': '开心', 'scene': '  缠着对方撒娇 '})
             await asyncio.wait_for(self.bridge.voice.queue.join(), 2)
-        self.assertEqual(self.calls, [(LINE, {'style': '开心', 'intensity': '中'})])
-        self.assertEqual(self.audio, [self.group])
+        self.assertEqual(self.calls, [(LINE, {'style': '开心', 'intensity': '中'}),
+                                      (LINE, {'style': '开心', 'intensity': '中', 'scene': '缠着对方撒娇'})])
+        self.assertEqual(self.audio, [self.group, self.group])
         with self.assertRaises(ValueError):
             async with server.grant(self.owner, names=('speak', 'shell')): pass
         await self.bridge.voice.close()
@@ -130,23 +134,25 @@ class SpeakToolTests(unittest.IsolatedAsyncioTestCase):
         self.enable_voice()
         command = [sys.executable, '-I', str(Path(__file__).parents[1] / 'tools/speak.py')]
 
-        async def run(grant, text, style='日常'):
+        async def run(grant, text, style='日常', scene=()):
             proc = await asyncio.create_subprocess_exec(
                 *command, '--grant', grant.config_path, '--style', style, '--intensity', '中',
-                '--text', text, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                *scene, '--text', text, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             out, err = await asyncio.wait_for(proc.communicate(), 5)
             self.assertEqual(err, b'')
             return proc.returncode, json.loads(out)
 
         async with server.grant(self.owner, names=('speak',)) as grant:
             self.assertEqual(await run(grant, LINE, '开心'), (0, {'status': 'queued'}))
+            self.assertEqual(await run(grant, LINE, '开心', ('--scene', '出发前雀跃')), (0, {'status': 'queued'}))
             code, result = await run(grant, '我想听。')
             self.assertEqual((code, result['code']), (1, 'request_rejected'))
             self.assertIn('太短', result['error'])
             await asyncio.wait_for(self.bridge.voice.queue.join(), 2)
         self.assertEqual(await run(grant, LINE), (1, {'error': '本轮授权文件不存在，请使用当前轮提供的命令，不能复用历史路径',
                                                       'code': 'grant_missing'}))
-        self.assertEqual(self.audio, [self.owner])
+        self.assertEqual(self.audio, [self.owner, self.owner])
+        self.assertEqual(self.calls[1][1].get('scene'), '出发前雀跃')
         await self.bridge.voice.close()
 
     async def test_full_owner_turn_gets_speak_command_only_in_tool_mode(self):
@@ -194,6 +200,9 @@ class SpeakConfigTests(unittest.TestCase):
                               '--style', '开心', '--intensity', '中', '--text', LINE])
         self.assertTrue(speak_command(command))
         self.assertTrue(speak_command(shlex.join(['/bin/bash', '-lc', command])))
+        with_scene = shlex.join(['python3', '-I', str(SPEAK_SCRIPT), '--grant', '/private/g.json', '--style', '开心',
+                                 '--intensity', '中', '--scene', '出发前雀跃', '--text', LINE])
+        self.assertTrue(speak_command(with_scene))
         for value in (command.replace(str(SPEAK_SCRIPT), '/tmp/speak.py'), command + ' --root /',
                       'echo speak.py', None):
             self.assertFalse(speak_command(value))

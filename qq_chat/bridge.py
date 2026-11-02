@@ -455,7 +455,7 @@ class Bridge(TaskCommands):
                                   '--grant', memory_grant.config_path])
             speak_instructions = ('\n本轮可调用 speak，用自己的声音说话。用终端执行以下命令，'
                                   '把参数换成本次内容：\n'
-                                  + command + ' --style 日常 --intensity 中 --text "要说的话"\n'
+                                  + command + ' --style 日常 --intensity 中 --scene "想怎么说" --text "要说的话"\n'
                                   + prompts.SPEAK_RULES + '授权文件仅本轮有效，不要复用历史轮次的 speak 命令。')
             request.instructions += speak_instructions
             request.runtime_instructions += '\n以下语音指令仅适用于当前轮。' + speak_instructions

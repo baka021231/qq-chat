@@ -2,7 +2,8 @@
 
 Run with the isolated IndexTTS Python. Model files and speaker references are
 selected at startup, never from incoming requests: a request names one of the
-fixed styles below. No QQ credentials or history.
+fixed styles below, or describes a scene that is matched against an offline
+clip library. No QQ credentials or history.
 """
 import argparse
 import base64
@@ -14,6 +15,7 @@ import math
 import os
 from pathlib import Path
 import random
+import re
 import sys
 import textwrap
 import time
@@ -44,9 +46,12 @@ SAMPLING = dict(do_sample=True, top_p=0.8, top_k=30, temperature=0.8,
 assert tuple(PRESETS) == STYLES and tuple(INTENSITY_SCALE) == INTENSITIES
 
 
+SCENE_MAX_CHARS = 60
+
+
 def validate_request(request):
-    if not isinstance(request, dict) or set(request) - {'text', 'seed', 'style', 'intensity'}:
-        raise ValueError('Expected text and optional seed, style and intensity only')
+    if not isinstance(request, dict) or set(request) - {'text', 'seed', 'style', 'intensity', 'scene'}:
+        raise ValueError('Expected text and optional seed, style, intensity and scene only')
     text = request.get('text')
     seed = request.get('seed', 42)
     style = request.get('style', '日常')
@@ -57,7 +62,11 @@ def validate_request(request):
         raise ValueError('Expected unsigned 32-bit seed')
     if style not in PRESETS or intensity not in INTENSITY_SCALE:
         raise ValueError('Unknown style or intensity')
-    return text, seed, style, intensity
+    scene = request.get('scene')
+    if scene is not None and (not isinstance(scene, str) or not scene.strip()
+                              or len(scene) > SCENE_MAX_CHARS or '\0' in scene):
+        raise ValueError('Expected 1-60 scene characters')
+    return text, seed, style, intensity, scene
 
 
 def emotion_vector(style, intensity):
@@ -111,6 +120,67 @@ def cap_pauses(samples, sample_rate, longest=1.0, floor_db=-40):
     return audio[keep]
 
 
+class TextEmbedder:
+    """bge-small-zh sentence vectors (CLS, L2-normalised), loaded from a local folder only."""
+    def __init__(self, model_dir):
+        import torch
+        from transformers import AutoModel, AutoTokenizer
+        self.torch = torch
+        self.tokenizer = AutoTokenizer.from_pretrained(str(model_dir), local_files_only=True)
+        self.model = AutoModel.from_pretrained(str(model_dir), local_files_only=True).eval()
+
+    def __call__(self, texts):
+        batch = self.tokenizer(texts, padding=True, truncation=True, max_length=256, return_tensors='pt')
+        with self.torch.no_grad():
+            vectors = self.model(**batch).last_hidden_state[:, 0]
+        return self.torch.nn.functional.normalize(vectors, dim=-1).numpy()
+
+
+class SceneLibrary:
+    """Choose the clip whose tone note and line best fit a requested scene.
+
+    Built offline in workspace/voice-library/<chapter>: index.json (clips with
+    tone notes), index.npz (their note/line embeddings) and qc.json (clips that
+    synthesised cleanly). Restricted clips (another character's voice through
+    hers, unsure speaker) and failed ones are never chosen.
+    """
+    NOTE_WEIGHT = 0.75  # how she says it matters more than what was said
+    THRESHOLD = 0.6     # below this the requested style is used instead
+    CLIP_ID = re.compile(r'^zh_vo_[A-Za-z0-9_]+$')
+
+    def __init__(self, folder, embed):
+        import numpy as np
+        self.np, self.embed = np, embed
+        self.folder = Path(folder).resolve(strict=True)
+        entries = json.loads((self.folder / 'index.json').read_text(encoding='utf-8'))
+        vectors = np.load(self.folder / 'index.npz')
+        passed = set(json.loads((self.folder / 'qc.json').read_text(encoding='utf-8'))['passed'])
+        keep = [i for i, entry in enumerate(entries)
+                if not entry['restricted'] and entry['id'] in passed and self.CLIP_ID.match(entry['id'])
+                and (self.folder / 'wav' / (entry['id'] + '.wav')).is_file()]
+        if not keep:
+            raise ValueError('Scene library has no usable clips')
+        self.ids = [entries[i]['id'] for i in keep]
+        self.notes, self.lines = vectors['note'][keep], vectors['line'][keep]
+
+    def pick(self, scene, text):
+        """Return (clip path, clip id, score), or (None, None, score) when nothing fits well."""
+        scene_vector, text_vector = self.embed([scene, text])
+        scores = (self.NOTE_WEIGHT * (self.notes @ scene_vector)
+                  + (1 - self.NOTE_WEIGHT) * (self.lines @ text_vector))
+        best = int(self.np.argmax(scores))
+        score = round(float(scores[best]), 3)
+        chosen = self.ids[best] if score >= self.THRESHOLD else None
+        # Local record of which clip was used, for "that one sounded wrong" follow-ups.
+        # Time, clip and score only; never the scene or the spoken text.
+        with open(self.folder / 'usage.jsonl', 'a', encoding='utf-8') as log:
+            log.write(json.dumps({'time': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+                                  'reference': chosen, 'score': score}) + '\n')
+        if chosen is None:
+            return None, None, score
+        return self.folder / 'wav' / (chosen + '.wav'), chosen, score
+
+
 def pcm_wav(sample_rate, samples):
     """Convert IndexTTS's integer-amplitude audio without changing its pitch."""
     import numpy as np
@@ -139,7 +209,7 @@ def pcm_wav(sample_rate, samples):
 
 
 class IndexSynthesizer:
-    def __init__(self, package_dir, device):
+    def __init__(self, package_dir, device, library=None, embedder=None):
         os.environ.update(HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1',
                           TOKENIZERS_PARALLELISM='false', OMP_NUM_THREADS='4')
         self.package = package_dir.resolve(strict=True)
@@ -190,22 +260,29 @@ class IndexSynthesizer:
         finally:
             infer_v2.load_checkpoint = native_loader
         patch_duration(infer_v2)
-        self.engine.duration_factor = 1 / SPEED
+        self.library = SceneLibrary(library, TextEmbedder(embedder)) if library else None
         self.load_seconds = time.perf_counter() - started
 
-    def synthesize(self, text, seed, style='日常', intensity='中'):
+    def synthesize(self, text, seed, style='日常', intensity='中', scene=None):
         random.seed(seed)
         self.np.random.seed(seed)
         self.torch.manual_seed(seed)
         if self.device.startswith('cuda'):
             self.torch.cuda.reset_peak_memory_stats()
-        vector = emotion_vector(style, intensity)
+        clip, clip_id, score = (self.library.pick(scene, text) if scene and self.library
+                                else (None, None, None))
+        if clip is not None:
+            # A matched clip carries its own emotion and pace.
+            reference, vector, speed = clip, None, 1.0
+        else:
+            reference, vector, speed = self.references[style], emotion_vector(style, intensity), SPEED
         if vector is not None:
             vector = self.engine.normalize_emo_vec(vector)
+        self.engine.duration_factor = 1 / speed
         started = time.perf_counter()
         with self.torch.inference_mode():
             result = self.engine.infer(
-                spk_audio_prompt=str(self.references[style]), text=text, output_path=None,
+                spk_audio_prompt=str(reference), text=text, output_path=None,
                 emo_audio_prompt=None, emo_alpha=1.0, emo_vector=vector,
                 use_random=False, use_emo_text=False, verbose=False,
                 max_mel_tokens=1500, max_text_tokens_per_segment=120,
@@ -218,8 +295,9 @@ class IndexSynthesizer:
                        load_seconds=self.load_seconds,
                        synthesis_seconds=time.perf_counter() - started,
                        source_sample_rate=sample_rate, output_sample_rate=32000,
-                       seed=seed, style=style, intensity=intensity, speed=SPEED,
-                       emotion_vector=vector, do_sample=True)
+                       seed=seed, style=style, intensity=intensity, speed=speed,
+                       emotion_vector=vector, do_sample=True,
+                       scene_reference=clip_id, scene_score=score)
         if self.device.startswith('cuda'):
             metrics['peak_gpu_allocated_mib'] = round(self.torch.cuda.max_memory_allocated() / 2 ** 20)
         return data, metrics
@@ -229,11 +307,11 @@ def serve(source, output, factory):
     engine = None
     for line in source:
         try:
-            text, seed, style, intensity = validate_request(json.loads(line))
+            text, seed, style, intensity, scene = validate_request(json.loads(line))
             with contextlib.redirect_stdout(sys.stderr):
                 if engine is None:
                     engine = factory()
-                audio, metrics = engine.synthesize(text, seed, style, intensity)
+                audio, metrics = engine.synthesize(text, seed, style, intensity, scene)
             validate_wav(audio)
             response = {'wav': base64.b64encode(audio).decode('ascii'), 'metrics': metrics}
         except Exception as error:
@@ -248,8 +326,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--package-dir', type=Path, required=True)
     parser.add_argument('--device', choices=('cuda', 'cpu'), default='cuda')
+    parser.add_argument('--library', type=Path, help='scene clip library folder (index.json, index.npz, qc.json, wav/)')
+    parser.add_argument('--embedder', type=Path, help='local bge-small-zh folder; required with --library')
     args = parser.parse_args()
-    serve(sys.stdin, sys.stdout, lambda: IndexSynthesizer(args.package_dir, args.device))
+    if bool(args.library) != bool(args.embedder):
+        parser.error('--library and --embedder go together')
+    serve(sys.stdin, sys.stdout,
+          lambda: IndexSynthesizer(args.package_dir, args.device, args.library, args.embedder))
 
 
 if __name__ == '__main__':
