@@ -168,6 +168,11 @@ class IndexAudioTests(unittest.TestCase):
             (second / 'qc.json').write_text(_json.dumps({'passed': ['role_9']}))
             both = SceneLibrary([root, second], library.embed)
             self.assertEqual(both.pick('冷笑', '无关')[:2], (second / 'wav' / 'role_9.wav', 'role_9'))
+            (second / 'index.json').write_text(_json.dumps([dict(id='role_9', restricted=False, heavy=True)]))
+            gated = SceneLibrary([root, second], library.embed)
+            self.assertEqual(gated.pick('冷笑', '无关', '激动')[1], 'role_9')  # heavy styles may use it
+            self.assertIsNone(gated.pick('冷笑', '无关', '日常')[1])  # light styles never do
+            self.assertEqual(gated.pick('哄睡', '台词', '安慰')[1], 'zh_vo_A_1')
             (second / 'index.json').write_text(_json.dumps([dict(id='zh_vo_A_1', restricted=False)]))
             (second / 'wav' / 'zh_vo_A_1.wav').write_bytes(b'')
             (second / 'qc.json').write_text(_json.dumps({'passed': ['zh_vo_A_1']}))

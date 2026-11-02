@@ -145,6 +145,8 @@ class SceneLibrary:
     through hers, unsure speaker, battle shouts) and failed ones are never chosen.
     """
     NOTE_WEIGHT = 0.75  # how she says it matters more than what was said
+    # Light styles never borrow crying, anger or grim narration, whatever the scene says.
+    LIGHT_STYLES = ('日常', '开心', '安慰')
     # Imitate the closest clip even when none fits closely: the owner preferred that
     # to falling back to a preset. Only nonsense scenes fall back to the style.
     THRESHOLD = 0.45
@@ -155,7 +157,7 @@ class SceneLibrary:
         self.np, self.embed = np, embed
         folders = [Path(folder).resolve(strict=True) for folder in folders]
         self.log = folders[0] / 'usage.jsonl'
-        self.clips, notes, lines = [], [], []
+        self.clips, notes, lines, heavy = [], [], [], []
         for folder in folders:
             entries = json.loads((folder / 'index.json').read_text(encoding='utf-8'))
             vectors = np.load(folder / 'index.npz')
@@ -164,6 +166,7 @@ class SceneLibrary:
                     if not entry['restricted'] and entry['id'] in passed and self.CLIP_ID.match(entry['id'])
                     and (folder / 'wav' / (entry['id'] + '.wav')).is_file()]
             self.clips += [(entries[i]['id'], folder / 'wav' / (entries[i]['id'] + '.wav')) for i in keep]
+            heavy.append(np.array([bool(entries[i].get('heavy')) for i in keep], dtype=bool))
             notes.append(vectors['note'][keep])
             lines.append(vectors['line'][keep])
         if not self.clips:
@@ -172,12 +175,15 @@ class SceneLibrary:
             raise ValueError('Clip ids must be unique across libraries')
         self.ids = [ident for ident, _ in self.clips]
         self.notes, self.lines = np.concatenate(notes), np.concatenate(lines)
+        self.heavy = np.concatenate(heavy)
 
-    def pick(self, scene, text):
+    def pick(self, scene, text, style=None):
         """Return (clip path, clip id, score), or (None, None, score) when nothing fits well."""
         scene_vector, text_vector = self.embed([scene, text])
         scores = (self.NOTE_WEIGHT * (self.notes @ scene_vector)
                   + (1 - self.NOTE_WEIGHT) * (self.lines @ text_vector))
+        if style in self.LIGHT_STYLES and not self.heavy.all():
+            scores = self.np.where(self.heavy, -1.0, scores)
         best = int(self.np.argmax(scores))
         score = round(float(scores[best]), 3)
         chosen = self.ids[best] if score >= self.THRESHOLD else None
@@ -279,7 +285,7 @@ class IndexSynthesizer:
         self.torch.manual_seed(seed)
         if self.device.startswith('cuda'):
             self.torch.cuda.reset_peak_memory_stats()
-        clip, clip_id, score = (self.library.pick(scene, text) if scene and self.library
+        clip, clip_id, score = (self.library.pick(scene, text, style) if scene and self.library
                                 else (None, None, None))
         if clip is not None:
             # A matched clip carries its own emotion and pace.
