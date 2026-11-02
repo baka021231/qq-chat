@@ -139,31 +139,39 @@ class TextEmbedder:
 class SceneLibrary:
     """Choose the clip whose tone note and line best fit a requested scene.
 
-    Built offline in workspace/voice-library/<chapter>: index.json (clips with
-    tone notes), index.npz (their note/line embeddings) and qc.json (clips that
-    synthesised cleanly). Restricted clips (another character's voice through
-    hers, unsure speaker) and failed ones are never chosen.
+    Each folder is built offline in workspace/voice-library/<source>: index.json
+    (clips with tone notes), index.npz (their note/line embeddings) and qc.json
+    (clips that synthesised cleanly). Restricted clips (another character's voice
+    through hers, unsure speaker, battle shouts) and failed ones are never chosen.
     """
     NOTE_WEIGHT = 0.75  # how she says it matters more than what was said
     # Imitate the closest clip even when none fits closely: the owner preferred that
     # to falling back to a preset. Only nonsense scenes fall back to the style.
     THRESHOLD = 0.45
-    CLIP_ID = re.compile(r'^zh_vo_[A-Za-z0-9_]+$')
+    CLIP_ID = re.compile(r'^[A-Za-z0-9_]+$')
 
-    def __init__(self, folder, embed):
+    def __init__(self, folders, embed):
         import numpy as np
         self.np, self.embed = np, embed
-        self.folder = Path(folder).resolve(strict=True)
-        entries = json.loads((self.folder / 'index.json').read_text(encoding='utf-8'))
-        vectors = np.load(self.folder / 'index.npz')
-        passed = set(json.loads((self.folder / 'qc.json').read_text(encoding='utf-8'))['passed'])
-        keep = [i for i, entry in enumerate(entries)
-                if not entry['restricted'] and entry['id'] in passed and self.CLIP_ID.match(entry['id'])
-                and (self.folder / 'wav' / (entry['id'] + '.wav')).is_file()]
-        if not keep:
+        folders = [Path(folder).resolve(strict=True) for folder in folders]
+        self.log = folders[0] / 'usage.jsonl'
+        self.clips, notes, lines = [], [], []
+        for folder in folders:
+            entries = json.loads((folder / 'index.json').read_text(encoding='utf-8'))
+            vectors = np.load(folder / 'index.npz')
+            passed = set(json.loads((folder / 'qc.json').read_text(encoding='utf-8'))['passed'])
+            keep = [i for i, entry in enumerate(entries)
+                    if not entry['restricted'] and entry['id'] in passed and self.CLIP_ID.match(entry['id'])
+                    and (folder / 'wav' / (entry['id'] + '.wav')).is_file()]
+            self.clips += [(entries[i]['id'], folder / 'wav' / (entries[i]['id'] + '.wav')) for i in keep]
+            notes.append(vectors['note'][keep])
+            lines.append(vectors['line'][keep])
+        if not self.clips:
             raise ValueError('Scene library has no usable clips')
-        self.ids = [entries[i]['id'] for i in keep]
-        self.notes, self.lines = vectors['note'][keep], vectors['line'][keep]
+        if len({ident for ident, _ in self.clips}) != len(self.clips):
+            raise ValueError('Clip ids must be unique across libraries')
+        self.ids = [ident for ident, _ in self.clips]
+        self.notes, self.lines = np.concatenate(notes), np.concatenate(lines)
 
     def pick(self, scene, text):
         """Return (clip path, clip id, score), or (None, None, score) when nothing fits well."""
@@ -175,12 +183,12 @@ class SceneLibrary:
         chosen = self.ids[best] if score >= self.THRESHOLD else None
         # Local record of which clip was used, for "that one sounded wrong" follow-ups.
         # Time, clip and score only; never the scene or the spoken text.
-        with open(self.folder / 'usage.jsonl', 'a', encoding='utf-8') as log:
+        with open(self.log, 'a', encoding='utf-8') as log:
             log.write(json.dumps({'time': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
                                   'reference': chosen, 'score': score}) + '\n')
         if chosen is None:
             return None, None, score
-        return self.folder / 'wav' / (chosen + '.wav'), chosen, score
+        return self.clips[best][1], chosen, score
 
 
 def pcm_wav(sample_rate, samples):
@@ -262,7 +270,7 @@ class IndexSynthesizer:
         finally:
             infer_v2.load_checkpoint = native_loader
         patch_duration(infer_v2)
-        self.library = SceneLibrary(library, TextEmbedder(embedder)) if library else None
+        self.library = SceneLibrary(library, TextEmbedder(embedder)) if library else None  # list of folders
         self.load_seconds = time.perf_counter() - started
 
     def synthesize(self, text, seed, style='日常', intensity='中', scene=None):
@@ -328,7 +336,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--package-dir', type=Path, required=True)
     parser.add_argument('--device', choices=('cuda', 'cpu'), default='cuda')
-    parser.add_argument('--library', type=Path, help='scene clip library folder (index.json, index.npz, qc.json, wav/)')
+    parser.add_argument('--library', type=Path, action='append',
+                        help='scene clip library folder (index.json, index.npz, qc.json, wav/); repeatable')
     parser.add_argument('--embedder', type=Path, help='local bge-small-zh folder; required with --library')
     args = parser.parse_args()
     if bool(args.library) != bool(args.embedder):

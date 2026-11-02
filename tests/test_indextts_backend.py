@@ -134,7 +134,7 @@ class IndexAudioTests(unittest.TestCase):
             np.savez(root / 'index.npz', note=axes, line=axes)
             (root / 'qc.json').write_text(_json.dumps({'passed': ['zh_vo_A_1', 'zh_vo_A_3', '../escape']}))
             vectors = {'哄睡': axes[0], '冷笑': axes[2], '无关': axes[1] * 0, '台词': axes[0]}
-            library = SceneLibrary(root, lambda texts: np.stack([vectors[t] for t in texts]))
+            library = SceneLibrary([root], lambda texts: np.stack([vectors[t] for t in texts]))
             self.assertEqual(library.ids, ['zh_vo_A_1'])  # failed QC, restricted and unsafe ids excluded
             path, ident, score = library.pick('哄睡', '台词')
             self.assertEqual((path.name, ident, score), ('zh_vo_A_1.wav', 'zh_vo_A_1', 1.0))
@@ -142,6 +142,19 @@ class IndexAudioTests(unittest.TestCase):
             log = [_json.loads(l) for l in (root / 'usage.jsonl').read_text().splitlines()]
             self.assertEqual([r['reference'] for r in log], ['zh_vo_A_1', None])
             self.assertTrue(all(set(r) == {'time', 'reference', 'score'} for r in log))
+            second = root / 'second'
+            (second / 'wav').mkdir(parents=True)
+            (second / 'wav' / 'role_9.wav').write_bytes(b'')
+            (second / 'index.json').write_text(_json.dumps([dict(id='role_9', restricted=False)]))
+            np.savez(second / 'index.npz', note=axes[2:3], line=axes[2:3])
+            (second / 'qc.json').write_text(_json.dumps({'passed': ['role_9']}))
+            both = SceneLibrary([root, second], library.embed)
+            self.assertEqual(both.pick('冷笑', '无关')[:2], (second / 'wav' / 'role_9.wav', 'role_9'))
+            (second / 'index.json').write_text(_json.dumps([dict(id='zh_vo_A_1', restricted=False)]))
+            (second / 'wav' / 'zh_vo_A_1.wav').write_bytes(b'')
+            (second / 'qc.json').write_text(_json.dumps({'passed': ['zh_vo_A_1']}))
+            with self.assertRaisesRegex(ValueError, 'unique'):
+                SceneLibrary([root, second], library.embed)
 
     def test_rejects_empty_stereo_nonfinite_and_excessive_audio(self):
         for samples in [np.array([]), np.zeros((20, 2)), np.array([np.nan]),
