@@ -16,6 +16,7 @@ NAMES = ('dispatch_task', 'list_tasks', 'task_status', 'stop_task', 'send_to_tas
 FRONT_TOOLS = frozenset('mcp__qq__' + name for name in NAMES)
 # Command-entry tools for FULL single-agent turns; not part of the Claude FRONT set.
 SPEAK = 'speak'
+GUEST_SPEECHES = 4  # per group turn; each line is at most about 10 seconds
 
 
 @dataclass(frozen=True)
@@ -183,8 +184,8 @@ class ToolServer:
                 raise ValueError('语音工具未启用')
             if self.bridge.blocked(source):
                 raise ValueError('当前发言者已被限制，语音没有发出')
-            if guest_voice and self.speech_counts.get(token, 0) >= 2:
-                raise ValueError('本轮群聊最多两段语音，请等待下一轮')
+            if guest_voice and self.speech_counts.get(token, 0) >= GUEST_SPEECHES:
+                raise ValueError(f'本轮群聊最多{GUEST_SPEECHES}段语音，请等待下一轮')
             # Voice-only groups never see the text reply, so a failed line falls back to its own text.
             fallback = arguments['text'] if self.bridge.group_voice_only(source) else None
             if not self.bridge.voice.say(source, arguments['text'], arguments['style'],

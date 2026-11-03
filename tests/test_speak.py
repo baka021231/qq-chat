@@ -12,7 +12,7 @@ from qq_chat.agents.base import NONE
 from qq_chat import prompts
 from qq_chat.bridge import Source, Bridge
 from qq_chat.memory_progress import SPEAK_SCRIPT, MemoryProgress, speak_command
-from qq_chat.voice import ProcessSynthesizer, VoiceReplies, speak_text
+from qq_chat.voice import SPEAK_MAX_CHARS, ProcessSynthesizer, VoiceReplies, speak_text
 import tests.test_front_tools as front_tests
 from tests.test_voice import wav_bytes
 
@@ -26,7 +26,7 @@ class SpeakTextTests(unittest.TestCase):
             with self.subTest(text=text), self.assertRaisesRegex(ValueError, '太短'):
                 speak_text(text, '日常', '中')
         with self.assertRaisesRegex(ValueError, '最多'):
-            speak_text('好' * 141, '日常', '中')
+            speak_text('好' * (SPEAK_MAX_CHARS + 1), '日常', '中')
         for style, intensity in (('愤怒', '中'), ('日常', '极高'), ('/tmp/a.wav', '中')):
             with self.assertRaises(ValueError):
                 speak_text(LINE, style, intensity)

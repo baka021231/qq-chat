@@ -18,7 +18,8 @@ MAX_AUDIO_BYTES = 8 * 1024 * 1024
 STYLES = ('日常', '开心', '安慰', '激动', '压着怒气', '哽咽')
 INTENSITIES = ('低', '中', '高')
 SPEAK_MIN_CHARS = 6
-SPEAK_MAX_CHARS = 140
+# About 10 seconds: her voice reads 3-4 hanzi a second, slower in heavy styles.
+SPEAK_MAX_CHARS = 35
 SCENE_MAX_CHARS = 60
 
 
@@ -32,7 +33,7 @@ def speech_text(text):
     return normalize_for_speech(text)
 
 
-def speech_chunks(text, limit=140):
+def speech_chunks(text, limit=SPEAK_MAX_CHARS):
     while text:
         end = min(len(text), limit)
         if end < len(text):

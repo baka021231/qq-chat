@@ -11,7 +11,7 @@ from unittest.mock import patch
 import wave
 
 from qq_chat.bridge import Bridge, Incoming, Source
-from qq_chat.voice import ProcessSynthesizer, VoiceReplies, speech_text, speech_chunks, validate_wav
+from qq_chat.voice import ProcessSynthesizer, VoiceReplies, SPEAK_MAX_CHARS, speech_text, speech_chunks, validate_wav
 
 
 def wav_bytes():
@@ -32,7 +32,7 @@ class SpeechTextTests(unittest.TestCase):
         text = '你好，这是测试。' * 100
         parts = list(speech_chunks(text))
         self.assertEqual(''.join(parts), text)
-        self.assertTrue(all(len(p) <= 140 for p in parts))
+        self.assertTrue(all(len(p) <= SPEAK_MAX_CHARS for p in parts))
 
     def test_audio_validation_rejects_truncated_and_wrong_format(self):
         validate_wav(wav_bytes())

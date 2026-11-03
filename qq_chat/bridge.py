@@ -488,7 +488,7 @@ class Bridge(TaskCommands):
         if self.group_voice_only(source) and speak_granted:
             request.runtime_instructions += ('\n当前群聊只发语音、不发文字，以下优先于上面“不必每轮都说”“照常写文字回复”：'
                                              '每轮都调用 speak 把这次的回复说出来，按此刻的情绪选 style 和 intensity，写好 scene；'
-                                             '话多就拆成最多两段，每段一个完整的意思。'
+                                             '每段不超过35字（约10秒），话多就拆成几段依次调用，每段一个完整的意思，一轮最多四段。'
                                              '最终正文写你说的话，它不会发到群里；没调用 speak 时程序才用默认语气念它，'
                                              '语音失败时发出原文。不到6个字的短句不用调用，直接写正文。'
                                              '不要另写“已排队”之类的语音发送说明。')
