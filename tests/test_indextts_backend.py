@@ -199,6 +199,22 @@ class IndexAudioTests(unittest.TestCase):
             self.assertEqual(picks, ['zh_vo_B', 'zh_vo_D', 'zh_vo_A', 'zh_vo_A'])
             self.assertEqual(SceneLibrary([root], library.embed).recent, picks)
 
+    def test_scene_library_rejects_vectors_from_another_embedder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / 'wav').mkdir()
+            (root / 'wav' / 'zh_vo_A.wav').write_bytes(b'')
+            (root / 'index.json').write_text(_json.dumps([dict(id='zh_vo_A', restricted=False, note='哄睡')]))
+            (root / 'qc.json').write_text(_json.dumps({'passed': ['zh_vo_A']}))
+            axes = np.eye(4, dtype=np.float32)
+            np.savez(root / 'index.npz', note=axes[:1], line=axes[:1])
+            same = lambda texts: np.stack([axes[0] for _ in texts])
+            self.assertEqual(SceneLibrary([root], same).ids, ['zh_vo_A'])
+            for other in (lambda texts: np.stack([axes[1] for _ in texts]),  # same size, other space
+                          lambda texts: np.ones((len(texts), 8), dtype=np.float32) / 8 ** .5):
+                with self.assertRaisesRegex(ValueError, 'another embedder'):
+                    SceneLibrary([root], other)
+
     def test_rejects_empty_stereo_nonfinite_and_excessive_audio(self):
         for samples in [np.array([]), np.zeros((20, 2)), np.array([np.nan]),
                         np.zeros(8000 * 120 + 1)]:
