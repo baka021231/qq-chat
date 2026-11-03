@@ -179,6 +179,26 @@ class IndexAudioTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'unique'):
                 SceneLibrary([root, second], library.embed)
 
+    def test_scene_library_ranks_within_the_style_and_rotates_recent_clips(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / 'wav').mkdir()
+            ids = ['zh_vo_A', 'zh_vo_B', 'zh_vo_C', 'zh_vo_D']
+            for ident in ids:
+                (root / 'wav' / (ident + '.wav')).write_bytes(b'')
+            labels = {'zh_vo_A': ['安慰'], 'zh_vo_B': ['日常', '开心'], 'zh_vo_C': []}  # D: older index, no labels
+            (root / 'index.json').write_text(_json.dumps(
+                [dict(id=i, restricted=False, **({'styles': labels[i]} if i in labels else {})) for i in ids]))
+            axes = np.eye(4, dtype=np.float32)
+            note = np.stack([axes[0], .96 * axes[0] + .28 * axes[1], axes[0], .95 * axes[0] + .312 * axes[1]])
+            np.savez(root / 'index.npz', note=note, line=np.stack([axes[3]] * 4))
+            (root / 'qc.json').write_text(_json.dumps({'passed': ids}))
+            library = SceneLibrary([root], lambda texts: np.stack([axes[0], axes[3]]))
+            picks = [library.pick('哄', '话', style)[1] for style in ('日常', '开心', '安慰', '安慰')]
+            # C is closest but fits no style; B gives way to D once used; A fits so much better it stays.
+            self.assertEqual(picks, ['zh_vo_B', 'zh_vo_D', 'zh_vo_A', 'zh_vo_A'])
+            self.assertEqual(SceneLibrary([root], library.embed).recent, picks)
+
     def test_rejects_empty_stereo_nonfinite_and_excessive_audio(self):
         for samples in [np.array([]), np.zeros((20, 2)), np.array([np.nan]),
                         np.zeros(8000 * 120 + 1)]:

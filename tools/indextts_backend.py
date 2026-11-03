@@ -140,11 +140,18 @@ class SceneLibrary:
     """Choose the clip whose tone note and line best fit a requested scene.
 
     Each folder is built offline in workspace/voice-library/<source>: index.json
-    (clips with tone notes), index.npz (their note/line embeddings) and qc.json
-    (clips that synthesised cleanly). Restricted clips (another character's voice
-    through hers, unsure speaker, battle shouts) and failed ones are never chosen.
+    (clips with tone notes and the styles each fits), index.npz (their note/line
+    embeddings) and qc.json (clips that synthesised cleanly). Restricted clips
+    (another character's voice through hers, unsure speaker, battle shouts) and
+    failed ones are never chosen.
     """
     NOTE_WEIGHT = 0.75  # how she says it matters more than what was said
+    # The small embedder misses emotional direction ("cold reproach" matched "warm
+    # and gratified"), so the requested style first narrows the clips to those
+    # labeled for it, and the scene ranks only those.
+    # A clip used in the last few picks steps aside for one nearly as close, so
+    # similar banter does not repeat the same clip line after line.
+    RECENT, RECENT_PENALTY = 6, 0.05
     # Light styles never borrow crying, anger or grim narration, whatever the scene says.
     LIGHT_STYLES = ('日常', '开心', '安慰')
     # Imitate the closest clip even when none fits closely: the owner preferred that
@@ -157,7 +164,7 @@ class SceneLibrary:
         self.np, self.embed = np, embed
         folders = [Path(folder).resolve(strict=True) for folder in folders]
         self.log = folders[0] / 'usage.jsonl'
-        self.clips, notes, lines, heavy = [], [], [], []
+        self.clips, notes, lines, heavy, styles = [], [], [], [], []
         for folder in folders:
             entries = json.loads((folder / 'index.json').read_text(encoding='utf-8'))
             vectors = np.load(folder / 'index.npz')
@@ -167,6 +174,8 @@ class SceneLibrary:
                     and (folder / 'wav' / (entry['id'] + '.wav')).is_file()]
             self.clips += [(entries[i]['id'], folder / 'wav' / (entries[i]['id'] + '.wav')) for i in keep]
             heavy.append(np.array([bool(entries[i].get('heavy')) for i in keep], dtype=bool))
+            # A clip without labels (older index) fits every style; an empty list fits none.
+            styles += [entries[i].get('styles', STYLES) for i in keep]
             notes.append(vectors['note'][keep])
             lines.append(vectors['line'][keep])
         if not self.clips:
@@ -176,6 +185,17 @@ class SceneLibrary:
         self.ids = [ident for ident, _ in self.clips]
         self.notes, self.lines = np.concatenate(notes), np.concatenate(lines)
         self.heavy = np.concatenate(heavy)
+        self.fits = {name: np.array([name in labels for labels in styles], dtype=bool) for name in STYLES}
+        self.recent = self.recent_picks()
+
+    def recent_picks(self):
+        """Seed recency from the usage log so a restart does not forget the last picks."""
+        try:
+            rows = [json.loads(line) for line in self.log.read_text(encoding='utf-8').splitlines()[-50:]]
+        except (OSError, ValueError):
+            return []
+        used = [row.get('reference') for row in rows if isinstance(row, dict)]
+        return [ident for ident in used if ident in self.ids][-self.RECENT:]
 
     def pick(self, scene, text, style=None):
         """Return (clip path, clip id, score), or (None, None, score) when nothing fits well."""
@@ -184,9 +204,14 @@ class SceneLibrary:
                   + (1 - self.NOTE_WEIGHT) * (self.lines @ text_vector))
         if style in self.LIGHT_STYLES and not self.heavy.all():
             scores = self.np.where(self.heavy, -1.0, scores)
-        best = int(self.np.argmax(scores))
+        if style in self.fits and self.fits[style].any():
+            scores = self.np.where(self.fits[style], scores, -1.0)
+        recent = self.np.array([ident in self.recent for ident in self.ids])
+        best = int(self.np.argmax(scores - self.RECENT_PENALTY * recent))
         score = round(float(scores[best]), 3)
         chosen = self.ids[best] if score >= self.THRESHOLD else None
+        if chosen is not None:
+            self.recent = (self.recent + [chosen])[-self.RECENT:]
         # Local record of which clip was used, for "that one sounded wrong" follow-ups.
         # Time, clip and score only; never the scene or the spoken text.
         with open(self.log, 'a', encoding='utf-8') as log:
