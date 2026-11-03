@@ -178,6 +178,8 @@ class SceneLibrary:
             styles += [entries[i].get('styles', STYLES) for i in keep]
             notes.append(vectors['note'][keep])
             lines.append(vectors['line'][keep])
+            if keep and entries[keep[0]].get('note'):
+                self.check_embedder(folder, entries[keep[0]]['note'], vectors['note'][keep[0]])
         if not self.clips:
             raise ValueError('Scene library has no usable clips')
         if len({ident for ident, _ in self.clips}) != len(self.clips):
@@ -187,6 +189,14 @@ class SceneLibrary:
         self.heavy = np.concatenate(heavy)
         self.fits = {name: np.array([name in labels for labels in styles], dtype=bool) for name in STYLES}
         self.recent = self.recent_picks()
+
+    def check_embedder(self, folder, note, stored):
+        """Vectors only compare within one model: re-embed one stored note to catch a
+        library built with a different embedder than the one passed with --embedder."""
+        vector = self.embed([note])[0]
+        if vector.shape != stored.shape or float(vector @ stored) < 0.99:
+            raise ValueError(f'{folder.name}/index.npz was built with another embedder; '
+                             'rebuild it with build_index.py using the --embedder model')
 
     def recent_picks(self):
         """Seed recency from the usage log so a restart does not forget the last picks."""
