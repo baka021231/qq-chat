@@ -213,3 +213,26 @@ switch OWNER.md and nightly paths, and verify byte equality plus direct lookup.
 Do not treat merging public code as proof that private local files were moved.
 If rolling back, preserve newer canonical diary entries before restoring old
 writers. No symlinks or ongoing duplicate synchronization are required.
+
+## Local nightly Git checkpoint
+
+On the current installation, the private organizer at
+`workspace/.automation/nightly_memory.py` is scheduled for 22:00 Australia/Sydney.
+From 2026-10-31, the owner has authorized a local workspace Git checkpoint after
+all daily consolidation and index updates succeed. This installation step is
+outside the public bridge package; pulling this repository does not install it.
+
+The checkpoint includes workspace changes permitted by its existing ignore
+rules, including persona, rules, memory and task documents, rather than only the
+summary generated that night. It never force-adds ignored files or pushes to a
+remote. No changes means no commit; dry runs and failed consolidation do not
+commit. The organizer verifies that workspace is its own Git root and refuses to
+change an already-staged selection. Git errors leave summary outputs intact,
+record the failure type privately and fail the service. If a failed commit left
+staged changes, resolve that selection manually before rerunning; the organizer
+does not discard it. This does not alter the model's read-only summary scope.
+
+The private organizer and its local checkpoint tests were backed up/validated
+separately: eight disposable-repository tests, syntax checks and a live dry run
+passed without model calls or committing the live workspace. The first scheduled
+commit remains to be observed; no bridge restart or timer change was needed.
