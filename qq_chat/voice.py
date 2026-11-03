@@ -168,10 +168,11 @@ class VoiceReplies:
             return False
         return self._enqueue(source, text, {}, fallback=reply)
 
-    def say(self, source, text, style, intensity, scene=None):
+    def say(self, source, text, style, intensity, scene=None, fallback=None):
         """Queue one line chosen by the agent; raises ValueError for the model to correct.
 
         scene describes how to say it; backends with a clip library match it, others ignore it.
+        fallback is sent instead of the generic notice if synthesis fails.
         """
         text = speak_text(text, style, intensity)
         options = {'style': style, 'intensity': intensity}
@@ -181,7 +182,7 @@ class VoiceReplies:
             options['scene'] = scene.strip()
         if self.blocked(source):
             return True
-        return self._enqueue(source, text, options)
+        return self._enqueue(source, text, options, fallback)
 
     def _enqueue(self, source, text, options, fallback=None):
         try:

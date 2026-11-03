@@ -6,7 +6,10 @@ import unittest
 from qq_chat.bridge import Source, Incoming
 from qq_chat.voice import VoiceReplies
 from tests import test_agents as agent_fixtures
+from tests import test_speak as speech_fixtures
 from tests.test_voice import wav_bytes
+
+LINE = speech_fixtures.LINE
 
 
 class GroupVoiceOnlyTests(unittest.IsolatedAsyncioTestCase):
@@ -24,11 +27,11 @@ class GroupVoiceOnlyTests(unittest.IsolatedAsyncioTestCase):
                                         self.bridge.send, self.bridge.blocked, capacity=capacity)
         self.addAsyncCleanup(self.bridge.voice.close)
 
-    async def test_owner_and_guest_group_reply_is_audio_only_and_has_no_speak(self):
+    async def test_without_tool_server_owner_and_guest_group_reply_is_read_aloud(self):
         self.enable()
         for source in [Source('group', 20001, 30001), Source('group', 20001, 10001)]:
             self.assertTrue(self.bridge.group_voice_only(source))
-            self.assertFalse(self.bridge.group_speak_enabled(source))
+            self.assertTrue(self.bridge.group_speak_enabled(source))
             reply, streamed = await self.bridge.chat(source, '你好')
             req = self.fake.requests[-1]
             self.assertFalse(streamed)
@@ -105,3 +108,72 @@ class GroupVoiceOnlyTests(unittest.IsolatedAsyncioTestCase):
         finally:
             worker.cancel()
             with contextlib.suppress(asyncio.CancelledError): await worker
+
+
+class GroupSpeakTests(unittest.IsolatedAsyncioTestCase):
+    """Voice-only groups speak every reply through speak; reading the text aloud is the fallback."""
+    asyncSetUp = speech_fixtures.SpeakToolTests.asyncSetUp
+    asyncTearDown = speech_fixtures.SpeakToolTests.asyncTearDown
+    setup_tools = speech_fixtures.SpeakToolTests.setup_tools
+    full_codex = speech_fixtures.SpeakToolTests.full_codex
+    enable_voice = speech_fixtures.SpeakToolTests.enable_voice
+
+    async def voice_only(self):
+        server = await self.setup_tools()
+        self.full_codex()
+        self.enable_voice()
+        self.cfg['voice']['group_voice_only'] = True
+        self.addAsyncCleanup(lambda: self.bridge.voice.close())
+        return server
+
+    def speak_during_turn(self, server, arguments):
+        reply = self.front.run
+
+        async def run(req):
+            await server.call(self.bridge._memory_grants[req.key].token, 'speak', arguments)
+            return await reply(req)
+        self.front.run = run
+
+    async def test_guest_and_owner_turns_get_speak_and_spoken_reply_is_not_read_again(self):
+        server = await self.voice_only()
+        arguments = {'text': LINE, 'style': '开心', 'scene': '欢迎回来的群友'}
+        self.speak_during_turn(server, arguments)
+        for source in (self.guest, self.group):
+            with self.subTest(source=source):
+                self.assertTrue(self.bridge.group_speak_enabled(source))
+                reply, streamed = await self.bridge.chat(source, '你好')
+                req = self.front.requests[-1]
+                self.assertIn('每轮都调用 speak', req.runtime_instructions)
+                self.assertNotIn('自动语音回复', req.runtime_instructions)
+                self.assertFalse(streamed)
+                await self.bridge.deliver(source, reply, '你好', streamed=streamed)
+                await asyncio.wait_for(self.bridge.voice.queue.join(), 2)
+        self.assertEqual(self.calls, [(LINE, {'style': '开心', 'intensity': '中', 'scene': '欢迎回来的群友'})] * 2)
+        self.assertEqual(self.audio, [self.guest, self.group])
+        self.assertEqual(self.sent, [])
+        self.assertFalse(self.bridge._spoken_turns)
+
+    async def test_turn_without_speak_is_read_aloud_in_the_default_tone(self):
+        await self.voice_only()
+        self.front.reply = '晚安呀。'
+        reply, streamed = await self.bridge.chat(self.guest, '晚安')
+        await self.bridge.deliver(self.guest, reply, '晚安', streamed=streamed)
+        await asyncio.wait_for(self.bridge.voice.queue.join(), 2)
+        self.assertEqual([options for _, options in self.calls], [{}])
+        self.assertEqual(self.audio, [self.guest])
+        self.assertEqual(self.sent, [])
+
+    async def test_failed_spoken_line_falls_back_to_its_own_text(self):
+        server = await self.voice_only()
+
+        class Synth:
+            async def synthesize(inner, text, **options): raise RuntimeError('backend detail')
+            async def close(inner): pass
+        async def send_audio(source, audio): pass
+        await self.bridge.voice.close()
+        self.bridge.voice = VoiceReplies(Synth(), send_audio, self.bridge.send, self.bridge.blocked)
+        self.speak_during_turn(server, {'text': LINE, 'style': '日常'})
+        reply, streamed = await self.bridge.chat(self.guest, '你好')
+        await self.bridge.deliver(self.guest, reply, '你好', streamed=streamed)
+        await asyncio.wait_for(self.bridge.voice.queue.join(), 2)
+        self.assertEqual(self.sent, [(self.guest, LINE)])
