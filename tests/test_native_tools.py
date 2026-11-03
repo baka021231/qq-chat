@@ -9,6 +9,7 @@ from qq_chat.agents.base import CHAT, NONE, TurnRequest
 from qq_chat.agents.codex import CodexAgent
 from qq_chat.codex_app import AppServer
 from qq_chat.bridge import Source
+from qq_chat.tool_server import GUEST_SPEECHES
 from tests import test_speak as speech_fixtures
 
 LINE = speech_fixtures.LINE
@@ -47,9 +48,9 @@ class NativeSpeechTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(self.bridge, 'blocked', return_value=True):
                 with self.assertRaisesRegex(ValueError, '限制'):
                     await invoke('speak', args)
-            self.assertEqual(await invoke('speak', args), {'status': 'queued'})
-            await invoke('speak', args)
-            with self.assertRaisesRegex(ValueError, '最多两段'):
+            for _ in range(GUEST_SPEECHES):
+                self.assertEqual(await invoke('speak', args), {'status': 'queued'})
+            with self.assertRaisesRegex(ValueError, f'最多{GUEST_SPEECHES}段'):
                 await invoke('speak', args)
             self.cfg['voice']['group_enabled'] = False
             with self.assertRaises(ValueError):
@@ -57,7 +58,7 @@ class NativeSpeechTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, '失效'):
             await invoke('speak', args)
         await asyncio.wait_for(self.bridge.voice.queue.join(), 2)
-        self.assertEqual(self.audio, [guest, guest])
+        self.assertEqual(self.audio, [guest] * GUEST_SPEECHES)
         self.assertFalse(server.speech_counts)
         await self.bridge.voice.close()
 
