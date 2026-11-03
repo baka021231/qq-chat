@@ -185,11 +185,13 @@ class ToolServer:
                 raise ValueError('当前发言者已被限制，语音没有发出')
             if guest_voice and self.speech_counts.get(token, 0) >= 2:
                 raise ValueError('本轮群聊最多两段语音，请等待下一轮')
+            # Voice-only groups never see the text reply, so a failed line falls back to its own text.
+            fallback = arguments['text'] if self.bridge.group_voice_only(source) else None
             if not self.bridge.voice.say(source, arguments['text'], arguments['style'],
-                                         arguments.get('intensity', '中'), arguments.get('scene')):
+                                         arguments.get('intensity', '中'), arguments.get('scene'),
+                                         fallback=fallback):
                 raise ValueError('语音队列已满，本次没有发出语音')
-            if guest_voice:
-                self.speech_counts[token] = self.speech_counts.get(token, 0) + 1
+            self.speech_counts[token] = self.speech_counts.get(token, 0) + 1
             logging.info('Front tool completed name=speak source=%s', source.kind)
             return {'status': 'queued'}
         if name == 'memory_search':

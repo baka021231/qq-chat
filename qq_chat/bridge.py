@@ -326,9 +326,10 @@ class Bridge(TaskCommands):
                 and (self.cfg.get('voice') or {}).get('mode', 'reply') == 'tool')
 
     def group_speak_enabled(self, source):
+        # Voice-only groups speak through the tool too, so the agent picks the tone of every reply.
         return (source.kind == 'group' and self.speak_enabled()
-                and not self.group_voice_only(source)
-                and (self.cfg.get('voice') or {}).get('group_enabled', False) is True)
+                and ((self.cfg.get('voice') or {}).get('group_enabled', False) is True
+                     or self.group_voice_only(source)))
 
     def group_voice_only(self, source):
         return (source.kind == 'group' and getattr(self, 'voice', None) is not None
@@ -464,8 +465,9 @@ class Bridge(TaskCommands):
             request.instructions += memory_instructions
             request.runtime_instructions = ('以下记忆检索指令仅适用于当前轮，替代历史中的命令和路径。'
                                             + memory_instructions)
-        if (not self.group_voice_only(source) and (authorized or self.group_speak_enabled(source))
-                and memory_grant is not None and SPEAK in memory_grant.names):
+        speak_granted = ((authorized or self.group_speak_enabled(source))
+                         and memory_grant is not None and SPEAK in memory_grant.names)
+        if speak_granted:
             if not authorized and profile.get('type') == 'codex_app':
                 request.dynamic_tools, request.on_tool_call = self.tool_server.native_binding(memory_grant)
                 speak_instructions = ('\n本轮可直接调用原生工具 speak，用自己的声音在当前群聊说话。'
@@ -483,7 +485,14 @@ class Bridge(TaskCommands):
                                        '这是文字聊天限制的唯一例外；不允许其他命令、文件读取、私人记忆或后台任务。')
             request.instructions += speak_instructions
             request.runtime_instructions += '\n以下语音指令仅适用于当前轮。' + speak_instructions
-        if self.group_voice_only(source):
+        if self.group_voice_only(source) and speak_granted:
+            request.runtime_instructions += ('\n当前群聊只发语音、不发文字，以下优先于上面“不必每轮都说”“照常写文字回复”：'
+                                             '每轮都调用 speak 把这次的回复说出来，按此刻的情绪选 style 和 intensity，写好 scene；'
+                                             '话多就拆成最多两段，每段一个完整的意思。'
+                                             '最终正文写你说的话，它不会发到群里；没调用 speak 时程序才用默认语气念它，'
+                                             '语音失败时发出原文。不到6个字的短句不用调用，直接写正文。'
+                                             '不要另写“已排队”之类的语音发送说明。')
+        elif self.group_voice_only(source):
             request.runtime_instructions += ('\n当前群聊使用自动语音回复：直接输出自然简短的回复正文，'
                                              '程序会合成并发送语音，失败时发送原文。'
                                              '本轮不提供 speak 工具，不要调用历史 speak 工具或终端语音命令，'
@@ -667,19 +676,22 @@ class Bridge(TaskCommands):
         names = [name for name, on in (('memory_search', self.cfg.get('memory', {}).get('enabled', True)),
                                        (SPEAK, self.speak_enabled())) if on]
         owner = owner_request(source, self.cfg['owner_qq'])
-        if self.group_voice_only(source):
-            names = [name for name in names if name != SPEAK]
         if not owner:
             names = [SPEAK] if self.group_speak_enabled(source) else []
         if ((owner and not config.get('back') or not owner and self.group_speak_enabled(source))
                 and names and server and server.server is not None):
             async with server.grant(source, names=names) as grant:
-                self._memory_grants[self.conversation(source)] = grant
+                key = self.conversation(source)
+                self._memory_grants[key] = grant
                 try:
                     async with self.front_execution(source, agent):
-                        return await self._chat(source, text, context_id, image_paths)
+                        result = await self._chat(source, text, context_id, image_paths)
+                    if self.group_voice_only(source) and server.speech_counts.get(grant.token):
+                        # Already said in her chosen tone; deliver() must not read the reply again.
+                        self.__dict__.setdefault('_spoken_turns', set()).add(key)
+                    return result
                 finally:
-                    self._memory_grants.pop(self.conversation(source), None)
+                    self._memory_grants.pop(key, None)
         async with self.front_execution(source, agent):
             return await self._chat(source, text, context_id, image_paths)
 
