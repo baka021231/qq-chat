@@ -85,6 +85,12 @@
 | [活人感 humanize](https://github.com/abbabanana/cortico-world-humanize) | Coopanion | 回复前先给角色一段内心独白，并**在它滑向套路化 AI 句式时提醒**。与“编程 Agent 人设漂移”研究想法直接相关，值得读源码 |
 | 麦麦拟人回复速度 | MaiBot | 按字数模拟打字耗时再发送 |
 
+### 2.8 一体化身份方案
+
+| 项目 | 生态 | 要点 |
+| --- | --- | --- |
+| [SurfCore](https://github.com/Mieksido/surfcore) | DSH，MIT，仅 Windows | 自述“不是把大模型接进 QQ，而是给模型一个身份、一套会遗忘的记忆、一份作息、两只手（QQ / B站）和一个桌面分身”。DSH 插件 + 独立 QQ 桥接进程两进程结构，QQ 依赖第三方闭源运行时 SnowLuma。**群聊会判断“这段可以结束了”，带着“下次怎么接”潜水**；B 站有作息、额度，会打分、评论、发动态；**会衰减的记忆卡进提示词 + 永不遗忘的全量卡只存档**；**“目的机制”**从近期记忆提炼“想弄明白 / 想做的事”驱动主动联系；每日 token 额度（80% 提醒、100% 停）；工具守卫 fail-closed |
+
 ## 3. 代表仓库概况
 
 数据来自 2026-11-04 克隆的提交历史。代码行数为 py/ts/js 文件的粗略合计，含测试与生成文件。
@@ -101,6 +107,7 @@
 | astrbot_plugin_group_chat_plus | 76 | 2025-10-28 | 2026-09-24 | 约 7.3 万 | AGPL-3.0 |
 | astrbot_plugin_LivelyState | 111 | 2026-01-07 | 2026-05-17 | 约 0.2 万 | AGPL-3.0 |
 | Mai-Soul-Engine | 145 | 2026-06-26 | 2026-09-17 | 约 3.3 万 | GPL-3.0-or-later |
+| surfcore | 90 | 2026-10-26 | 2026-11-03 | 约 10.8 万（含 `dist` 打包产物） | MIT |
 
 ## 4. 共同的设计模式
 
@@ -110,11 +117,12 @@
 4. **人工审核关键变更**：人格变化（self_learning）、新观点（Mai-Soul-Engine）、即将遗忘的记忆（angel_memory）、分区记忆的回滚（weighted-memory）。
 5. **可观测面板**：陪伴小屋、灵魂控制台、联系人监控、L1–L7 观测，记录决策原因与成本。
 6. **高风险能力默认关闭**：sylanne、private_companion 都要求主动消息、跨会话共享等能力显式开启。
+7. **给维护代码的 Agent 立规矩**：SurfCore 主要由 Agent 维护，`AGENTS.md` 列出“十条铁律”，如先写“现象 → 根因 → 影响面 → 修法 → 怎么验证”再动手、至少比较两条路线、“不补屎山：新代码让下一次改动更容易了吗”、删改前先备份、“别相信会话记忆，相信文件”；配套 `docs/HANDOFF.md`（交接单）、`docs/PITFALLS.md`（踩坑与复现命令）、`docs/cases/`（事故复盘），以及 dev / main 双分支与单独的发布会话。
 
 ## 5. 问题与空白
 
 - **缺评测**：“最强拟人”“真实的内心世界”等均为自述，未见对“像不像人”“用户是否受益”的测量。
-- **代码质量参差**：大量 AI 生成代码、规模膨胀快（46 万行、22 万行），已出现丢数据的 bug。
+- **代码质量未经审查**：本调研没有阅读这些项目的实现代码，只看到间接信号：有项目自述全部代码由 AI 编写（proactive_chat），有扩展评论区报告丢数据的 bug（memory-weight），也有项目半年内增长到数十万行（private_companion、sylanne；行数可能包含前端与生成文件，不能单独说明质量）。要判断质量，需要按测试有效性、热点复杂度、文档准确性等维度逐项检查。
 - **隐私与伦理**：
   - 复现**特定群友**的说话方式（self_learning 影子模式）；
   - 截屏观察（screen-companion 自称“视奸”）、读取手环健康数据；
@@ -135,6 +143,8 @@
 | 风险能力治理 | sylanne | 默认关闭、逐项开启、分层观测 |
 | 记忆生命周期 | livingmemory、angel_memory | 衰减与强化、遗忘前审查 |
 | 她的情绪与用户的情绪分开 | Coopanion feeling | 情绪是角色自己的状态，不等于好感度 |
+| 对话收尾、带目的地主动联系 | SurfCore | 判断一段对话该结束并记下“下次怎么接”；从近期记忆提炼想做的事再决定是否主动 |
+| AI 维护的项目不烂掉 | SurfCore | `AGENTS.md` 铁律、`HANDOFF.md` 交接单、`PITFALLS.md` 踩坑记录、事故复盘 |
 
 爱弥斯的差异化方向仍是**成长陪伴**：复盘、老前辈式的问题拆解、基于 git 记录与日记的有证据鼓励。以上项目提供的是基础设施思路，不是现成方案。
 
@@ -147,6 +157,10 @@
 - [Pal-AI-Lab/cortico-extensions](https://github.com/Pal-AI-Lab/cortico-extensions)
 - [Pal-AI-Lab/Coopanion](https://github.com/Pal-AI-Lab/Coopanion)
 - [0xsline/awesome-deepseek-harness](https://github.com/0xsline/awesome-deepseek-harness)
+
+单独阅读的项目：
+
+- [Mieksido/surfcore](https://github.com/Mieksido/surfcore)（原仓库；GitHub 上另有多个 fork）
 
 “养鱼”背景报道：
 
