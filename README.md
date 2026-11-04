@@ -30,6 +30,7 @@ NapCat OneBot 11 与本机 Agent 会话之间的桥接，支持 Codex、Claude C
 | `docs/ARCHITECTURE.md` | 架构与开发说明：模块、权限模型、数据库、常见改动、测试写法 |
 | `docs/AGENT-INTERFACE.md` | Agent 统一接口与隔离设计（设计稿，尚未实现）：分层职责、接口草案、迁移步骤 |
 | `docs/APPSERVER-MIGRATION.md` | Codex 会话映射与终端接续 |
+| `docs/RESEARCH-HUMANLIKE-BOTS.md` | 拟人化聊天 Bot 调研（MaiBot、AstrBot、Coopanion）：代表项目、设计模式与对爱弥斯的参考 |
 | `docs/CHANGELOG.md` | 变更记录 |
 | `setup/` | NapCat 安装脚本 |
 | `config.example.json` | 配置模板 |
